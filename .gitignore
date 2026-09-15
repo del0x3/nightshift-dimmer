@@ -1,0 +1,10 @@
+# Service logs and runtime flags
+service.log
+*.log
+service.stop
+override.txt
+*.tmp
+
+# Windows system files
+Thumbs.db
+desktop.ini

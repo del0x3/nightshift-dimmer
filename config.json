@@ -1,0 +1,8 @@
+{
+  "start_time": "21:00",
+  "end_time": "05:00",
+  "white_dim": 0.75,
+  "night_brightness": 65,
+  "day_brightness": 70,
+  "adjust_brightness": true
+}
