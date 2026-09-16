@@ -56,7 +56,32 @@ public class Program {
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool SetPriorityClass(IntPtr hProcess, uint dwPriorityClass);
-    public const uint ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000;
+    public const uint BELOW_NORMAL_PRIORITY_CLASS = 0x00004000;
+
+    public enum QUERY_USER_NOTIFICATION_STATE {
+        QUNS_NOT_PRESENT = 1,
+        QUNS_BUSY = 2,
+        QUNS_RUNNING_D3D_FULL_SCREEN = 3,
+        QUNS_PRESENTATION_MODE = 4,
+        QUNS_ACCEPTS_NOTIFICATIONS = 5,
+        QUNS_QUIET_TIME = 6,
+        QUNS_APP = 7
+    }
+
+    [DllImport("shell32.dll")]
+    public static extern int SHQueryUserNotificationState(out QUERY_USER_NOTIFICATION_STATE pquns);
+
+    public static bool IsGameRunning() {
+        try {
+            QUERY_USER_NOTIFICATION_STATE state;
+            if (SHQueryUserNotificationState(out state) == 0) {
+                return state == QUERY_USER_NOTIFICATION_STATE.QUNS_RUNNING_D3D_FULL_SCREEN ||
+                       state == QUERY_USER_NOTIFICATION_STATE.QUNS_BUSY ||
+                       state == QUERY_USER_NOTIFICATION_STATE.QUNS_PRESENTATION_MODE;
+            }
+        } catch {}
+        return false;
+    }
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern uint RegisterWindowMessage(string lpString);
@@ -137,7 +162,12 @@ public class Program {
     private static Process guardianProcess = null;
     private static NotifyIcon trayIcon = null;
 
+    private static DateTime lastRefreshTime = DateTime.MinValue;
+
     public static void TriggerForceRefresh(string reason) {
+        if (IsGameRunning()) return; // In-game stealth mode: zero GPU / DWM interruptions
+        if ((DateTime.UtcNow - lastRefreshTime).TotalSeconds < 15.0) return; // 15-second debounce
+        lastRefreshTime = DateTime.UtcNow;
         Log(string.Format("[SelfDefense] Instant refresh triggered: {0}", reason));
         forceRefresh = true;
     }
@@ -444,8 +474,16 @@ public class Program {
         }
     }
 
+    private static int lastAppliedBrightness = -1;
+
     public static void SetBrightness(int level) {
         if (!AdjustBrightness) return;
+        if (level == lastAppliedBrightness) return; // Cache: zero redundant WMI / DDC/CI calls!
+        if (IsGameRunning()) {
+            Log("[GameMode] 3D game active: deferring backlight I2C traffic to preserve 60+ FPS.");
+            return;
+        }
+        lastAppliedBrightness = level;
         ThreadPool.QueueUserWorkItem(state => {
             // 1. Internal laptop screen (WMI)
             try {
@@ -519,6 +557,11 @@ public class Program {
     }
 
     public static void SmoothMatrixTransition(MAGCOLOREFFECT to, int durationMs = 1800) {
+        if (IsGameRunning()) {
+            MagSetFullscreenColorEffect(ref to);
+            return;
+        }
+
         MAGCOLOREFFECT from = new MAGCOLOREFFECT();
         if (!MagGetFullscreenColorEffect(ref from)) {
             MagSetFullscreenColorEffect(ref to);
@@ -552,8 +595,10 @@ public class Program {
     }
 
     public static bool ApplyNightEffect(float dim, bool smooth = false) {
+        AttachToDefaultDesktop();
+        MagInitialize();
         MAGCOLOREFFECT target = GetNightMatrix(dim);
-        if (smooth && SmoothTransition) {
+        if (smooth && SmoothTransition && !IsGameRunning()) {
             SmoothMatrixTransition(target, TransitionDurationMs);
             return true;
         }
@@ -569,8 +614,9 @@ public class Program {
 
     public static bool ApplyDayEffect(bool smooth = false) {
         MAGCOLOREFFECT target = GetDayMatrix();
-        if (smooth && SmoothTransition) {
+        if (smooth && SmoothTransition && !IsGameRunning()) {
             SmoothMatrixTransition(target, TransitionDurationMs);
+            MagUninitialize();
             return true;
         }
 
@@ -580,10 +626,14 @@ public class Program {
             MagInitialize();
             res = MagSetFullscreenColorEffect(ref target);
         }
+        MagUninitialize(); // Unload hook so DirectX/Vulkan games run in 100% native unhooked DWM mode
         return res;
     }
 
     public static bool VerifyAndEnforceDisplay(bool isNight) {
+        if (IsGameRunning()) return true; // Zero background polling/interference during gameplay
+        if (!isNight) return true;        // In daytime, Magnification is completely unloaded, nothing to enforce!
+
         MAGCOLOREFFECT cur = new MAGCOLOREFFECT();
         bool ok = MagGetFullscreenColorEffect(ref cur);
         if (!ok) {
@@ -592,18 +642,10 @@ public class Program {
             ok = MagGetFullscreenColorEffect(ref cur);
         }
 
-        if (isNight) {
-            bool looksLikeNight = Math.Abs(cur.m00 - cur.m01) < 0.05f && cur.m00 < 0.5f && cur.m00 > 0.01f;
-            if (!looksLikeNight) {
-                Log("HealthCheck: Matrix lost night mode! Re-applying...");
-                return ApplyNightEffect(WhiteDim, false);
-            }
-        } else {
-            bool looksLikeIdentity = Math.Abs(cur.m00 - 1.0f) < 0.05f && Math.Abs(cur.m11 - 1.0f) < 0.05f && Math.Abs(cur.m01) < 0.05f;
-            if (!looksLikeIdentity) {
-                Log("HealthCheck: Matrix is not in day mode! Re-applying day effect...");
-                return ApplyDayEffect(false);
-            }
+        bool looksLikeNight = Math.Abs(cur.m00 - cur.m01) < 0.05f && cur.m00 < 0.5f && cur.m00 > 0.01f;
+        if (!looksLikeNight) {
+            Log("HealthCheck: Matrix lost night mode! Re-applying...");
+            return ApplyNightEffect(WhiteDim, false);
         }
         return true;
     }
@@ -1722,9 +1764,9 @@ setInterval(refresh, 2000);
                 SetProcessShutdownParameters(0x3FF, 0);
             } catch {}
 
-            // Elevate process priority to ABOVE_NORMAL for sub-millisecond DWM matrix responsiveness
+            // Set background process priority to BELOW_NORMAL to yield 100% CPU priority to games
             try {
-                SetPriorityClass(Process.GetCurrentProcess().Handle, ABOVE_NORMAL_PRIORITY_CLASS);
+                SetPriorityClass(Process.GetCurrentProcess().Handle, BELOW_NORMAL_PRIORITY_CLASS);
             } catch {}
 
             AttachToDefaultDesktop();
@@ -1810,9 +1852,11 @@ setInterval(refresh, 2000);
 
                     if (forceRefresh) {
                         forceRefresh = false;
-                        isNightActive = null;
-                        AttachToDefaultDesktop();
-                        MagInitialize();
+                        if (isNightActive == true) {
+                            AttachToDefaultDesktop();
+                            MagInitialize();
+                            ApplyNightEffect(WhiteDim, false);
+                        }
                     }
 
                     // Every 10 seconds: keep guardian alive, suppress Windows ColorFilter, update tray
@@ -1822,13 +1866,13 @@ setInterval(refresh, 2000);
                         UpdateTrayIcon(isNightActive == true);
                     }
 
-                    // Every 60 seconds: autonomous self-healing of core workspace files
-                    if (tick > 0 && tick % 60 == 0) {
+                    // Every 60 seconds: autonomous self-healing of core workspace files (skip during games)
+                    if (tick > 0 && tick % 60 == 0 && !IsGameRunning()) {
                         VerifyAndRepairCoreFiles();
                     }
 
-                    // Autonomous background Git OTA check
-                    if (AutoUpdateGit && tick > 0 && tick % GitCheckIntervalSec == 0) {
+                    // Autonomous background Git OTA check (skip during games)
+                    if (AutoUpdateGit && tick > 0 && tick % GitCheckIntervalSec == 0 && !IsGameRunning()) {
                         ThreadPool.QueueUserWorkItem(state => {
                             GitManager.CheckAndPerformHotSwap(false);
                         });
@@ -1854,7 +1898,7 @@ setInterval(refresh, 2000);
                             isNightActive = true;
                             UpdateTrayIcon(true);
                         } else {
-                            if (tick % 5 == 0) {
+                            if (tick % 10 == 0) {
                                 VerifyAndEnforceDisplay(true);
                             }
                         }
@@ -1868,10 +1912,6 @@ setInterval(refresh, 2000);
                             SetBrightness(DayBrightness);
                             isNightActive = false;
                             UpdateTrayIcon(false);
-                        } else {
-                            if (tick % 5 == 0) {
-                                VerifyAndEnforceDisplay(false);
-                            }
                         }
                     }
 
