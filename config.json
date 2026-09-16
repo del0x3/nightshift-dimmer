@@ -4,5 +4,6 @@
   "white_dim": 0.75,
   "night_brightness": 65,
   "day_brightness": 70,
-  "adjust_brightness": true
+  "adjust_brightness": true,
+  "auto_update_git": true
 }

@@ -49,6 +49,7 @@ Done! The daemon will now automatically manage your display according to your sc
 | [`toggle.cmd`](toggle.cmd) | Instantly toggles between Day (color) and Night (grayscale + dimming) mode. |
 | [`status.cmd`](status.cmd) | Displays active configuration, current local time, and operational status. |
 | [`build.cmd`](build.cmd) | Recompiles `NightModeService.exe` from source using Windows' built-in C# compiler. |
+| [`update.cmd`](update.cmd) | Pulls latest changes from GitHub, rebuilds, and restarts the service. |
 
 ---
 
@@ -99,6 +100,12 @@ NightModeService.exe off
 
 # Stop service and reset display to factory defaults
 NightModeService.exe stop
+
+# Check for updates on GitHub, pull, recompile, and restart
+NightModeService.exe update
+
+# Clear any manual override and return to automatic schedule
+NightModeService.exe reset
 ```
 
 ---

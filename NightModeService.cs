@@ -52,14 +52,24 @@ public class Program {
     public static int NightBrightness = 65;                   // Backlight level at night
     public static int DayBrightness = 70;                     // Backlight level during day
     public static bool AdjustBrightness = true;
+    public static bool AutoUpdateGit = true;
 
     private static volatile bool forceRefresh = false;
 
     public static void Log(string msg) {
         try {
             string line = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}", DateTime.Now, msg);
-            File.AppendAllText(LogFile, line + "\r\n");
             Console.WriteLine(line);
+
+            // Log rotation: keep under 2MB
+            FileInfo fi = new FileInfo(LogFile);
+            if (fi.Exists && fi.Length > 2 * 1024 * 1024) {
+                string backup = LogFile + ".old";
+                if (File.Exists(backup)) File.Delete(backup);
+                File.Move(LogFile, backup);
+            }
+
+            File.AppendAllText(LogFile, line + "\r\n");
         } catch {}
     }
 
@@ -165,6 +175,16 @@ public class Program {
                         AdjustBrightness = val.Contains("true");
                     }
                 }
+
+                int augIdx = json.IndexOf("\"auto_update_git\"");
+                if (augIdx >= 0) {
+                    int colon = json.IndexOf(":", augIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        string val = json.Substring(colon + 1, comma - colon - 1).Trim().ToLower();
+                        AutoUpdateGit = val.Contains("true");
+                    }
+                }
             }
         } catch (Exception ex) {
             Log("Error reading config: " + ex.Message);
@@ -245,14 +265,12 @@ public class Program {
         }
 
         if (isNight) {
-            // Check if current matrix represents night effect (m00 approx equals m01 and < 0.5)
             bool looksLikeNight = Math.Abs(cur.m00 - cur.m01) < 0.05f && cur.m00 < 0.5f && cur.m00 > 0.01f;
             if (!looksLikeNight) {
                 Log("HealthCheck: Matrix lost night mode! Re-applying...");
                 return ApplyNightEffect(WhiteDim);
             }
         } else {
-            // Check if current matrix is identity (m00 == 1, m11 == 1, m22 == 1, m01 == 0)
             bool looksLikeIdentity = Math.Abs(cur.m00 - 1.0f) < 0.05f && Math.Abs(cur.m11 - 1.0f) < 0.05f && Math.Abs(cur.m01) < 0.05f;
             if (!looksLikeIdentity) {
                 Log("HealthCheck: Matrix is not in day mode! Re-applying day effect...");
@@ -268,6 +286,32 @@ public class Program {
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true)) {
                 if (key != null) {
                     key.SetValue("NightModeService", "\"" + exePath + "\"");
+                }
+            }
+        } catch {}
+    }
+
+    public static void CheckGitUpdateBackground() {
+        try {
+            ProcessStartInfo psi = new ProcessStartInfo("git", "fetch origin master");
+            psi.WorkingDirectory = AppDir;
+            psi.CreateNoWindow = true;
+            psi.UseShellExecute = false;
+            Process p = Process.Start(psi);
+            if (p != null && p.WaitForExit(15000)) {
+                if (p.ExitCode == 0) {
+                    ProcessStartInfo pRev = new ProcessStartInfo("git", "rev-parse HEAD origin/master");
+                    pRev.WorkingDirectory = AppDir;
+                    pRev.RedirectStandardOutput = true;
+                    pRev.CreateNoWindow = true;
+                    pRev.UseShellExecute = false;
+                    Process p2 = Process.Start(pRev);
+                    string output = p2.StandardOutput.ReadToEnd();
+                    p2.WaitForExit(5000);
+                    string[] hashes = output.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (hashes.Length >= 2 && hashes[0] != hashes[1]) {
+                        Log(string.Format("[GitUpdate] New commit available on GitHub: {0}. Run update.cmd or NightModeService.exe update to apply.", hashes[1].Substring(0, Math.Min(7, hashes[1].Length))));
+                    }
                 }
             }
         } catch {}
@@ -291,6 +335,20 @@ public class Program {
                 SetBrightness(DayBrightness);
                 EnsureWindowsColorFilterDisabled();
                 Console.WriteLine("Sent stop signal to NightModeService and restored display.");
+                return;
+            }
+
+            if (cmd == "update") {
+                Console.WriteLine("[NightMode] Triggering Git update...");
+                string updater = Path.Combine(AppDir, "update.cmd");
+                if (File.Exists(updater)) {
+                    ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"" + updater + "\"");
+                    psi.WorkingDirectory = AppDir;
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                } else {
+                    Console.WriteLine("[Error] update.cmd not found.");
+                }
                 return;
             }
 
@@ -367,6 +425,7 @@ public class Program {
                 Console.WriteLine("Night Brightness:  " + NightBrightness + "%");
                 Console.WriteLine("Day Brightness:    " + DayBrightness + "%");
                 Console.WriteLine("Adjust Brightness: " + AdjustBrightness);
+                Console.WriteLine("Auto Update Git:   " + AutoUpdateGit);
                 Process[] procs = Process.GetProcessesByName("NightModeService");
                 Console.WriteLine("Service Running:   " + (procs.Length > 0 ? "Yes (PID " + procs[0].Id + ")" : "No"));
                 Console.WriteLine("========================================");
@@ -446,10 +505,17 @@ public class Program {
                         MagInitialize();
                     }
 
-                    // Reload config every 10 seconds
+                    // Reload config and suppress Windows ColorFilter every 10 seconds
                     if (tick % 10 == 0) {
                         LoadConfig();
                         EnsureWindowsColorFilterDisabled();
+                    }
+
+                    // Background Git update check every 12 hours (43200 ticks)
+                    if (AutoUpdateGit && tick > 0 && tick % 43200 == 0) {
+                        ThreadPool.QueueUserWorkItem(state => {
+                            CheckGitUpdateBackground();
+                        });
                     }
 
                     string over = null;
