@@ -6,6 +6,8 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Management;
 using System.Windows.Forms;
+using System.Net;
+using System.Text;
 using Microsoft.Win32;
 
 public class Program {
@@ -51,6 +53,10 @@ public class Program {
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool SetProcessShutdownParameters(uint dwLevel, uint dwFlags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetPriorityClass(IntPtr hProcess, uint dwPriorityClass);
+    public const uint ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000;
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern uint RegisterWindowMessage(string lpString);
@@ -113,13 +119,19 @@ public class Program {
     public static TimeSpan EndTime = new TimeSpan(5, 0, 0);   // 05:00
     public static float WhiteDim = 0.75f;                     // Dim white point by 25%
     public static int NightBrightness = 65;                   // Backlight level at night
-    public static int DayBrightness = 70;                     // Backlight level during day
+    public static int DayBrightness = 100;                    // Backlight level during day (100% full brightness)
     public static bool AdjustBrightness = true;
     public static bool SmoothTransition = true;
     public static int TransitionDurationMs = 1800;
     public static bool TrayIconEnabled = true;
     public static bool AutoUpdateGit = true;
     public static int GitCheckIntervalSec = 3600;
+    public static string ScheduleMode = "fixed"; // "fixed" or "solar"
+    public static double Latitude = 50.4501;      // Default: Kyiv, Ukraine
+    public static double Longitude = 30.5234;
+    public static string ColorMode = "grayscale"; // "grayscale", "amber", "candlelight"
+    public static bool WebApiEnabled = true;
+    public static int WebApiPort = 19840;
 
     private static volatile bool forceRefresh = false;
     private static Process guardianProcess = null;
@@ -306,18 +318,129 @@ public class Program {
                         GitCheckIntervalSec = int.Parse(json.Substring(colon + 1, comma - colon - 1).Trim());
                     }
                 }
+
+                int smmIdx = json.IndexOf("\"schedule_mode\"");
+                if (smmIdx >= 0) {
+                    int c1 = json.IndexOf("\"", smmIdx + 15);
+                    int c2 = json.IndexOf("\"", c1 + 1);
+                    if (c1 >= 0 && c2 > c1) {
+                        ScheduleMode = json.Substring(c1 + 1, c2 - c1 - 1).Trim().ToLower();
+                    }
+                }
+
+                int latIdx = json.IndexOf("\"latitude\"");
+                if (latIdx >= 0) {
+                    int colon = json.IndexOf(":", latIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        Latitude = double.Parse(json.Substring(colon + 1, comma - colon - 1).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+                    }
+                }
+
+                int lonIdx = json.IndexOf("\"longitude\"");
+                if (lonIdx >= 0) {
+                    int colon = json.IndexOf(":", lonIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        Longitude = double.Parse(json.Substring(colon + 1, comma - colon - 1).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+                    }
+                }
+
+                int cmIdx = json.IndexOf("\"color_mode\"");
+                if (cmIdx >= 0) {
+                    int c1 = json.IndexOf("\"", cmIdx + 12);
+                    int c2 = json.IndexOf("\"", c1 + 1);
+                    if (c1 >= 0 && c2 > c1) {
+                        ColorMode = json.Substring(c1 + 1, c2 - c1 - 1).Trim().ToLower();
+                    }
+                }
+
+                int waeIdx = json.IndexOf("\"web_api_enabled\"");
+                if (waeIdx >= 0) {
+                    int colon = json.IndexOf(":", waeIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        string val = json.Substring(colon + 1, comma - colon - 1).Trim().ToLower();
+                        WebApiEnabled = val.Contains("true");
+                    }
+                }
+
+                int wapIdx = json.IndexOf("\"web_api_port\"");
+                if (wapIdx >= 0) {
+                    int colon = json.IndexOf(":", wapIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        WebApiPort = int.Parse(json.Substring(colon + 1, comma - colon - 1).Trim());
+                    }
+                }
             }
         } catch (Exception ex) {
             Log("Error reading config: " + ex.Message);
         }
     }
 
+    // ========================================================
+    // ☀️ ASTRONOMICAL SOLAR TWILIGHT ENGINE (NOAA ALGORITHM)
+    // ========================================================
+    public static class SolarCalculator {
+        public static void CalculateSunTimes(double lat, double lon, DateTime date, out TimeSpan sunrise, out TimeSpan sunset) {
+            int dayOfYear = date.DayOfYear;
+            double gamma = 2.0 * Math.PI / 365.0 * (dayOfYear - 1);
+            
+            // Equation of time (minutes)
+            double eqtime = 229.18 * (0.000075 + 0.001868 * Math.Cos(gamma) - 0.032077 * Math.Sin(gamma)
+                            - 0.014615 * Math.Cos(2.0 * gamma) - 0.040849 * Math.Sin(2.0 * gamma));
+            
+            // Solar declination (radians)
+            double decl = 0.006918 - 0.399912 * Math.Cos(gamma) + 0.070257 * Math.Sin(gamma)
+                          - 0.006758 * Math.Cos(2.0 * gamma) + 0.000907 * Math.Sin(2.0 * gamma)
+                          - 0.002697 * Math.Cos(3.0 * gamma) + 0.00148 * Math.Sin(3.0 * gamma);
+
+            double latRad = lat * Math.PI / 180.0;
+            double zenithRad = 90.833 * Math.PI / 180.0;
+            
+            double cosHourAngle = (Math.Cos(zenithRad) / (Math.Cos(latRad) * Math.Cos(decl))) - (Math.Tan(latRad) * Math.Tan(decl));
+            cosHourAngle = Math.Max(-1.0, Math.Min(1.0, cosHourAngle));
+            double hourAngleDeg = Math.Acos(cosHourAngle) * 180.0 / Math.PI;
+
+            // Solar noon in UTC minutes
+            double solarNoonUtc = 720.0 - (4.0 * lon) - eqtime;
+            double sunriseUtcMin = solarNoonUtc - (hourAngleDeg * 4.0);
+            double sunsetUtcMin = solarNoonUtc + (hourAngleDeg * 4.0);
+
+            // Local Time offset
+            TimeSpan tzOffset = TimeZoneInfo.Local.GetUtcOffset(date);
+            double sunriseLocalMin = sunriseUtcMin + tzOffset.TotalMinutes;
+            double sunsetLocalMin = sunsetUtcMin + tzOffset.TotalMinutes;
+
+            while (sunriseLocalMin < 0) sunriseLocalMin += 1440;
+            while (sunriseLocalMin >= 1440) sunriseLocalMin -= 1440;
+            while (sunsetLocalMin < 0) sunsetLocalMin += 1440;
+            while (sunsetLocalMin >= 1440) sunsetLocalMin -= 1440;
+
+            sunrise = TimeSpan.FromMinutes(sunriseLocalMin);
+            sunset = TimeSpan.FromMinutes(sunsetLocalMin);
+        }
+    }
+
     public static bool IsNightTime() {
         TimeSpan now = DateTime.Now.TimeOfDay;
-        if (StartTime <= EndTime) {
-            return now >= StartTime && now < EndTime;
+        TimeSpan start = StartTime;
+        TimeSpan end = EndTime;
+
+        if (ScheduleMode == "solar") {
+            try {
+                TimeSpan sr, ss;
+                SolarCalculator.CalculateSunTimes(Latitude, Longitude, DateTime.Today, out sr, out ss);
+                start = ss; // Night starts at sunset
+                end = sr;   // Night ends at sunrise
+            } catch {}
+        }
+
+        if (start <= end) {
+            return now >= start && now < end;
         } else {
-            return now >= StartTime || now < EndTime;
+            return now >= start || now < end;
         }
     }
 
@@ -359,16 +482,29 @@ public class Program {
     }
 
     public static MAGCOLOREFFECT GetNightMatrix(float dim) {
-        float rw = 0.2126f * dim;
-        float gw = 0.7152f * dim;
-        float bw = 0.0722f * dim;
-
         MAGCOLOREFFECT effect = new MAGCOLOREFFECT();
-        effect.m00 = rw; effect.m01 = rw; effect.m02 = rw;
-        effect.m10 = gw; effect.m11 = gw; effect.m12 = gw;
-        effect.m20 = bw; effect.m21 = bw; effect.m22 = bw;
         effect.m33 = 1.0f;
         effect.m44 = 1.0f;
+
+        if (ColorMode == "amber") {
+            // Warm amber spectrum with blue suppression
+            effect.m00 = 1.0f * dim;
+            effect.m11 = 0.82f * dim;
+            effect.m22 = 0.30f * dim;
+        } else if (ColorMode == "candlelight") {
+            // Deep candlelight melatonin protection
+            effect.m00 = 1.0f * dim;
+            effect.m11 = 0.65f * dim;
+            effect.m22 = 0.10f * dim;
+        } else {
+            // Rec. 709 luminance grayscale
+            float rw = 0.2126f * dim;
+            float gw = 0.7152f * dim;
+            float bw = 0.0722f * dim;
+            effect.m00 = rw; effect.m01 = rw; effect.m02 = rw;
+            effect.m10 = gw; effect.m11 = gw; effect.m12 = gw;
+            effect.m20 = bw; effect.m21 = bw; effect.m22 = bw;
+        }
         return effect;
     }
 
@@ -591,9 +727,28 @@ public class Program {
                 TriggerForceRefresh("Tray auto schedule selected");
             });
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("📊 Open Live Dashboard", null, (s, e) => {
+            menu.Items.Add("📊 Open Live Terminal HUD", null, (s, e) => {
                 Process.Start(new ProcessStartInfo("cmd.exe", "/c \"\"" + Path.Combine(AppDir, "dashboard.cmd") + "\"\""));
             });
+            menu.Items.Add("🌐 Open Cyberpunk Web HUD", null, (s, e) => {
+                Process.Start("http://localhost:" + WebApiPort + "/");
+            });
+
+            ToolStripMenuItem colorMenu = new ToolStripMenuItem("🎨 Color Profile");
+            colorMenu.DropDownItems.Add("Rec.709 Grayscale", null, (s, e) => {
+                ColorMode = "grayscale";
+                TriggerForceRefresh("Color profile set to grayscale");
+            });
+            colorMenu.DropDownItems.Add("Warm Amber Tint", null, (s, e) => {
+                ColorMode = "amber";
+                TriggerForceRefresh("Color profile set to amber");
+            });
+            colorMenu.DropDownItems.Add("Cozy Candlelight", null, (s, e) => {
+                ColorMode = "candlelight";
+                TriggerForceRefresh("Color profile set to candlelight");
+            });
+            menu.Items.Add(colorMenu);
+
             menu.Items.Add("🐙 Check Git Updates", null, (s, e) => {
                 ThreadPool.QueueUserWorkItem(state => GitManager.CheckAndPerformHotSwap(true));
             });
@@ -604,6 +759,235 @@ public class Program {
 
             trayIcon.ContextMenuStrip = menu;
         } catch {}
+    }
+
+    // ========================================================
+    // 🌐 EMBEDDED ZERO-DEPENDENCY CYBERPUNK WEB HUD & REST API
+    // ========================================================
+    public static class WebDaemon {
+        private static HttpListener listener = null;
+
+        public static void Start() {
+            if (!WebApiEnabled) return;
+            Thread t = new Thread(() => {
+                try {
+                    listener = new HttpListener();
+                    listener.Prefixes.Add(string.Format("http://localhost:{0}/", WebApiPort));
+                    listener.Start();
+                    Log(string.Format("[WebDaemon] Cyberpunk Web HUD online at http://localhost:{0}/", WebApiPort));
+                    while (listener.IsListening) {
+                        var ctx = listener.GetContext();
+                        ThreadPool.QueueUserWorkItem(state => ProcessRequest(ctx));
+                    }
+                } catch (Exception ex) {
+                    Log("[WebDaemon] Server exception: " + ex.Message);
+                }
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        public static void Stop() {
+            try {
+                if (listener != null && listener.IsListening) {
+                    listener.Stop();
+                    listener.Close();
+                }
+            } catch {}
+        }
+
+        private static void ProcessRequest(HttpListenerContext ctx) {
+            try {
+                string path = ctx.Request.Url.AbsolutePath.ToLower();
+                ctx.Response.Headers.Add("Access-Control-Allow-Origin", "*");
+
+                if (path == "/api/status") {
+                    TimeSpan now = DateTime.Now.TimeOfDay;
+                    bool isNight = IsNightTime();
+                    TimeSpan nextSwitch;
+                    if (isNight) {
+                        nextSwitch = (now < EndTime) ? (EndTime - now) : ((new TimeSpan(24, 0, 0) - now) + EndTime);
+                    } else {
+                        nextSwitch = (now < StartTime) ? (StartTime - now) : ((new TimeSpan(24, 0, 0) - now) + StartTime);
+                    }
+
+                    int procCount = Process.GetProcessesByName("NightModeService").Length;
+                    long totalMem = 0;
+                    foreach (var p in Process.GetProcessesByName("NightModeService")) {
+                        try { totalMem += p.WorkingSet64 / (1024 * 1024); } catch {}
+                    }
+
+                    double progressPct = 0.0;
+                    if (isNight) {
+                        TimeSpan totalNight = (EndTime >= StartTime) ? (EndTime - StartTime) : ((new TimeSpan(24, 0, 0) - StartTime) + EndTime);
+                        TimeSpan elapsedNight = (now >= StartTime) ? (now - StartTime) : ((new TimeSpan(24, 0, 0) - StartTime) + now);
+                        progressPct = Math.Max(0.0, Math.Min(1.0, elapsedNight.TotalMinutes / totalNight.TotalMinutes));
+                    } else {
+                        TimeSpan totalDay = (StartTime >= EndTime) ? (StartTime - EndTime) : ((new TimeSpan(24, 0, 0) - EndTime) + StartTime);
+                        TimeSpan elapsedDay = (now >= EndTime) ? (now - EndTime) : ((new TimeSpan(24, 0, 0) - EndTime) + now);
+                        progressPct = Math.Max(0.0, Math.Min(1.0, elapsedDay.TotalMinutes / totalDay.TotalMinutes));
+                    }
+
+                    string json = string.Format(
+                        "{{\"status\":\"running\",\"is_night\":{0},\"schedule\":\"{1} - {2}\",\"schedule_mode\":\"{3}\",\"white_dim\":{4:F2},\"current_brightness\":{5},\"color_mode\":\"{6}\",\"process_count\":{7},\"memory_mb\":{8},\"next_switch\":\"{9:D2}h {10:D2}m {11:D2}s\",\"cycle_percent\":{12},\"git_commit\":\"{13}\",\"git_sync\":\"{14}\"}}",
+                        isNight.ToString().ToLower(),
+                        StartTime.ToString(@"hh\:mm"),
+                        EndTime.ToString(@"hh\:mm"),
+                        ScheduleMode,
+                        WhiteDim,
+                        isNight ? NightBrightness : DayBrightness,
+                        ColorMode,
+                        procCount,
+                        totalMem,
+                        nextSwitch.Hours,
+                        nextSwitch.Minutes,
+                        nextSwitch.Seconds,
+                        (int)(progressPct * 100),
+                        GitManager.GetCurrentCommit(),
+                        GitManager.GetSyncStatus()
+                    );
+                    byte[] bytes = Encoding.UTF8.GetBytes(json);
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.ContentLength64 = bytes.Length;
+                    ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                    return;
+                }
+
+                if (path == "/api/day") {
+                    File.WriteAllText(OverrideFile, "off");
+                    ApplyDayEffect(true);
+                    SetBrightness(DayBrightness);
+                    UpdateTrayIcon(false);
+                    byte[] bytes = Encoding.UTF8.GetBytes("{\"ok\":true,\"mode\":\"day\"}");
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                    return;
+                }
+
+                if (path == "/api/night") {
+                    File.WriteAllText(OverrideFile, "on");
+                    ApplyNightEffect(WhiteDim, true);
+                    SetBrightness(NightBrightness);
+                    UpdateTrayIcon(true);
+                    byte[] bytes = Encoding.UTF8.GetBytes("{\"ok\":true,\"mode\":\"night\"}");
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                    return;
+                }
+
+                if (path == "/api/auto") {
+                    if (File.Exists(OverrideFile)) File.Delete(OverrideFile);
+                    TriggerForceRefresh("Web API auto selected");
+                    byte[] bytes = Encoding.UTF8.GetBytes("{\"ok\":true,\"mode\":\"auto\"}");
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                    return;
+                }
+
+                if (path == "/api/update") {
+                    ThreadPool.QueueUserWorkItem(s => GitManager.CheckAndPerformHotSwap(true));
+                    byte[] bytes = Encoding.UTF8.GetBytes("{\"ok\":true,\"message\":\"update triggered\"}");
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                    return;
+                }
+
+                // Serve Embedded HTML Web Dashboard
+                string html = @"<!DOCTYPE html>
+<html>
+<head>
+<meta charset=""utf-8""><meta name=""viewport"" content=""width=device-width, initial-scale=1"">
+<title>NightShift Dimmer - Cyberpunk Web HUD</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0b0f19; color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; }
+.card { background: rgba(30, 41, 59, 0.75); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; max-width: 640px; width: 100%; padding: 36px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7); }
+.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+.title { font-size: 24px; font-weight: 800; color: #f8fafc; letter-spacing: -0.02em; }
+.badge { padding: 6px 14px; border-radius: 9999px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.badge-day { background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.4); }
+.badge-night { background: rgba(96, 165, 250, 0.2); color: #93c5fd; border: 1px solid rgba(96, 165, 250, 0.4); }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+.metric { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 14px; padding: 16px; }
+.metric-title { font-size: 11px; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.metric-val { font-size: 18px; font-weight: 700; color: #f1f5f9; }
+.actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 24px; }
+button { background: #334155; border: 1px solid rgba(255, 255, 255, 0.12); color: #f8fafc; padding: 12px 8px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+button:hover { background: #475569; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+.progress-container { margin: 20px 0; }
+.progress-label { display: flex; justify-content: space-between; font-size: 12px; color: #94a3b8; margin-bottom: 8px; font-weight: 600; }
+.progress-bar { width: 100%; height: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #818cf8); transition: width 0.6s ease; }
+</style>
+</head>
+<body>
+<div class=""card"">
+  <div class=""header"">
+    <div class=""title"">🌙 NightShift Dimmer</div>
+    <div id=""mode-badge"" class=""badge badge-day"">DAY MODE</div>
+  </div>
+  <div class=""progress-container"">
+    <div class=""progress-label"">
+      <span id=""next-label"">Next Transition in ...</span>
+      <span id=""pct-label"">0%</span>
+    </div>
+    <div class=""progress-bar""><div id=""progress-fill"" class=""progress-fill"" style=""width: 0%;""></div></div>
+  </div>
+  <div class=""grid"">
+    <div class=""metric""><div class=""metric-title"">Active Schedule</div><div class=""metric-val"" id=""sched-val"">21:00 - 05:00</div></div>
+    <div class=""metric""><div class=""metric-title"">White Luminance Cap</div><div class=""metric-val"" id=""dim-val"">75%</div></div>
+    <div class=""metric""><div class=""metric-title"">Screen Backlight</div><div class=""metric-val"" id=""bright-val"">70%</div></div>
+    <div class=""metric""><div class=""metric-title"">Color Profile</div><div class=""metric-val"" id=""profile-val"">Rec.709 Grayscale</div></div>
+    <div class=""metric""><div class=""metric-title"">Daemon Cluster</div><div class=""metric-val"" id=""proc-val"">2 Active (Twin Shield)</div></div>
+    <div class=""metric""><div class=""metric-title"">Cloud Sync (Git)</div><div class=""metric-val"" id=""git-val"">Up to Date</div></div>
+  </div>
+  <div class=""actions"">
+    <button onclick=""apiAction('day')"">☀️ Day</button>
+    <button onclick=""apiAction('night')"">🌙 Night</button>
+    <button onclick=""apiAction('auto')"">🔄 Auto</button>
+    <button onclick=""apiAction('update')"">🐙 Pull OTA</button>
+  </div>
+</div>
+<script>
+async function refresh() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    const isNight = data.is_night;
+    const badge = document.getElementById('mode-badge');
+    badge.textContent = isNight ? '🌙 NIGHT MODE' : '☀️ DAY MODE';
+    badge.className = 'badge ' + (isNight ? 'badge-night' : 'badge-day');
+    document.getElementById('sched-val').textContent = data.schedule + ' (' + data.schedule_mode + ')';
+    document.getElementById('dim-val').textContent = (data.white_dim * 100).toFixed(0) + '%';
+    document.getElementById('bright-val').textContent = data.current_brightness + '%';
+    document.getElementById('profile-val').textContent = data.color_mode;
+    document.getElementById('proc-val').textContent = data.process_count + ' Procs (' + data.memory_mb + ' MB)';
+    document.getElementById('git-val').textContent = data.git_commit + ' (' + data.git_sync + ')';
+    document.getElementById('next-label').textContent = 'Next switch in ' + data.next_switch;
+    document.getElementById('pct-label').textContent = data.cycle_percent + '%';
+    document.getElementById('progress-fill').style.width = data.cycle_percent + '%';
+  } catch(e){}
+}
+async function apiAction(act) {
+  try { await fetch('/api/' + act, { method: 'POST' }); await refresh(); } catch(e){}
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>";
+                byte[] htmlBytes = Encoding.UTF8.GetBytes(html);
+                ctx.Response.ContentType = "text/html; charset=utf-8";
+                ctx.Response.ContentLength64 = htmlBytes.Length;
+                ctx.Response.OutputStream.Write(htmlBytes, 0, htmlBytes.Length);
+                ctx.Response.Close();
+            } catch {}
+        }
     }
 
     // ========================================================
@@ -1338,6 +1722,11 @@ public class Program {
                 SetProcessShutdownParameters(0x3FF, 0);
             } catch {}
 
+            // Elevate process priority to ABOVE_NORMAL for sub-millisecond DWM matrix responsiveness
+            try {
+                SetPriorityClass(Process.GetCurrentProcess().Handle, ABOVE_NORMAL_PRIORITY_CLASS);
+            } catch {}
+
             AttachToDefaultDesktop();
             LoadConfig();
             EnsureAutostart();
@@ -1377,6 +1766,11 @@ public class Program {
             msgThread.IsBackground = true;
             msgThread.SetApartmentState(ApartmentState.STA);
             msgThread.Start();
+
+            // Start Embedded Web HUD & REST API Server
+            if (WebApiEnabled) {
+                WebDaemon.Start();
+            }
 
             // Register system events as secondary failsafe
             SystemEvents.PowerModeChanged += (sender, e) => {
@@ -1492,6 +1886,8 @@ public class Program {
             if (trayIcon != null) {
                 try { trayIcon.Visible = false; trayIcon.Dispose(); } catch {}
             }
+
+            WebDaemon.Stop();
 
             Log("Service exiting. Restoring default display...");
             ApplyDayEffect(false);

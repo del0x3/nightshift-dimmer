@@ -51,6 +51,7 @@ Done! The daemon will now automatically manage your display according to your sc
 | [`dashboard.cmd`](dashboard.cmd) | Opens live real-time ASCII telemetry dashboard with cycle progress bar. |
 | [`healthcheck.cmd`](healthcheck.cmd) | Runs deep 6-point diagnostics of daemon, DWM, registry, and Git. |
 | [`selftest.cmd`](selftest.cmd) | Runs automated 8-component hardware self-test suite. |
+| [`web.cmd`](web.cmd) | Opens embedded Cyberpunk Web HUD in default browser. |
 | [`sync.cmd`](sync.cmd) | Forces full Git sync, self-repair of core files, and zero-downtime hot-swap. |
 | [`build.cmd`](build.cmd) | Recompiles `NightModeService.exe` from source using Windows' built-in C# compiler. |
 | [`update.cmd`](update.cmd) | Pulls latest changes from GitHub, rebuilds, and restarts the service. |
@@ -68,13 +69,19 @@ Settings are stored in [`config.json`](config.json) and are hot-reloaded automat
   "end_time": "05:00",
   "white_dim": 0.75,
   "night_brightness": 65,
-  "day_brightness": 70,
+  "day_brightness": 100,
   "adjust_brightness": true,
   "smooth_transition": true,
   "transition_duration_ms": 1800,
   "tray_icon": true,
   "auto_update_git": true,
-  "git_check_interval_seconds": 3600
+  "git_check_interval_seconds": 3600,
+  "schedule_mode": "fixed",
+  "latitude": 50.4501,
+  "longitude": 30.5234,
+  "color_mode": "grayscale",
+  "web_api_enabled": true,
+  "web_api_port": 19840
 }
 ```
 
@@ -82,17 +89,22 @@ Settings are stored in [`config.json`](config.json) and are hot-reloaded automat
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `start_time` | string (`HH:mm`) | `"21:00"` | Time in 24-hour format when night mode activates. |
-| `end_time` | string (`HH:mm`) | `"05:00"` | Time in 24-hour format when night mode deactivates. |
+| `start_time` | string (`HH:mm`) | `"21:00"` | Time in 24-hour format when night mode activates (`"fixed"` mode). |
+| `end_time` | string (`HH:mm`) | `"05:00"` | Time in 24-hour format when night mode deactivates (`"fixed"` mode). |
 | `white_dim` | float (`0.0` - `1.0`) | `0.75` | White-point scale factor. `0.75` caps pure white to 75% peak luminance. |
 | `night_brightness` | integer (`0` - `100`) | `65` | Target monitor backlight level during nighttime. |
-| `day_brightness` | integer (`0` - `100`) | `70` | Restored backlight level during daytime. |
-| `adjust_brightness`| boolean | `true` | Whether to adjust backlight via WMI (`WmiSetBrightness`). |
+| `day_brightness` | integer (`0` - `100`) | `100` | Full restored monitor backlight level during daytime (100%). |
+| `adjust_brightness`| boolean | `true` | Whether to adjust backlight via WMI & DDC/CI. |
 | `smooth_transition`| boolean | `true` | Smooth cinematic 60 FPS cross-fade matrix interpolation. |
 | `transition_duration_ms` | integer | `1800` | Duration of matrix cross-fade in milliseconds. |
 | `tray_icon` | boolean | `true` | Show dynamic system tray icon with live status & menu. |
 | `auto_update_git` | boolean | `true` | Autonomous background Git OTA update checks. |
 | `git_check_interval_seconds` | integer | `3600` | Interval between autonomous Git update checks. |
+| `schedule_mode` | string | `"fixed"` | `"fixed"` (clock-based) or `"solar"` (NOAA astronomical twilight). |
+| `latitude` / `longitude` | float | `50.4501` / `30.5234` | Geographic coordinates for dynamic sunset/sunrise calculation. |
+| `color_mode` | string | `"grayscale"` | Matrix profile: `"grayscale"`, `"amber"`, or `"candlelight"`. |
+| `web_api_enabled` | boolean | `true` | Embedded zero-dependency HTTP server and Web HUD. |
+| `web_api_port` | integer | `19840` | Port for the Cyberpunk Web HUD and REST API (`http://localhost:19840/`). |
 
 ---
 

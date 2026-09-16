@@ -54,3 +54,4 @@ jobs:
           selftest.cmd
           sync.cmd
           build.cmd
+          web.cmd

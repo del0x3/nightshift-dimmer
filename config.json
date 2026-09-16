@@ -3,11 +3,17 @@
   "end_time": "05:00",
   "white_dim": 0.75,
   "night_brightness": 65,
-  "day_brightness": 70,
+  "day_brightness": 100,
   "adjust_brightness": true,
   "smooth_transition": true,
   "transition_duration_ms": 1800,
   "tray_icon": true,
   "auto_update_git": true,
-  "git_check_interval_seconds": 3600
+  "git_check_interval_seconds": 3600,
+  "schedule_mode": "fixed",
+  "latitude": 50.4501,
+  "longitude": 30.5234,
+  "color_mode": "grayscale",
+  "web_api_enabled": true,
+  "web_api_port": 19840
 }

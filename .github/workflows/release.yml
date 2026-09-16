@@ -42,7 +42,8 @@ jobs:
           "healthcheck.ps1",
           "selftest.cmd",
           "sync.cmd",
-          "build.cmd"
+          "build.cmd",
+          "web.cmd"
         )
         Compress-Archive -Path $filesToInclude -DestinationPath $zipName
         $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
