@@ -1,0 +1,49 @@
+name: CI & Build Verification
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Validate Daemon
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Build NightModeService.exe
+      shell: cmd
+      run: |
+        call build.cmd /ci
+
+    - name: Verify Binary Integrity
+      shell: powershell
+      run: |
+        if (Test-Path "NightModeService.exe") {
+          $file = Get-Item "NightModeService.exe"
+          Write-Host "NightModeService.exe successfully generated! ($($file.Length) bytes)"
+        } else {
+          Write-Error "Build verification failed: NightModeService.exe does not exist!"
+          exit 1
+        }
+
+    - name: Archive Production Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: NightShift-Dimmer-Release
+        path: |
+          NightModeService.exe
+          config.json
+          README.md
+          install.cmd
+          update.cmd
+          rollback.cmd
+          start.cmd
+          stop.cmd
+          toggle.cmd
+          status.cmd

@@ -50,6 +50,7 @@ Done! The daemon will now automatically manage your display according to your sc
 | [`status.cmd`](status.cmd) | Displays active configuration, current local time, and operational status. |
 | [`build.cmd`](build.cmd) | Recompiles `NightModeService.exe` from source using Windows' built-in C# compiler. |
 | [`update.cmd`](update.cmd) | Pulls latest changes from GitHub, rebuilds, and restarts the service. |
+| [`rollback.cmd`](rollback.cmd) | Reverts repository to previous commit, recompiles, and hot-swaps service. |
 
 ---
 
@@ -101,8 +102,17 @@ NightModeService.exe off
 # Stop service and reset display to factory defaults
 NightModeService.exe stop
 
-# Check for updates on GitHub, pull, recompile, and restart
+# Display rich Git telemetry (branch, commit, sync status, working tree)
+NightModeService.exe git
+
+# Check for updates on GitHub, pull, verify build, and hot-swap
 NightModeService.exe update
+
+# Rollback to previous commit and hot-swap
+NightModeService.exe rollback
+
+# Self-repair any missing or corrupted workspace files from Git
+NightModeService.exe repair
 
 # Clear any manual override and return to automatic schedule
 NightModeService.exe reset

@@ -53,6 +53,7 @@ public class Program {
     public static int DayBrightness = 70;                     // Backlight level during day
     public static bool AdjustBrightness = true;
     public static bool AutoUpdateGit = true;
+    public static int GitCheckIntervalSec = 3600;             // 1 hour check
 
     private static volatile bool forceRefresh = false;
 
@@ -185,6 +186,15 @@ public class Program {
                         AutoUpdateGit = val.Contains("true");
                     }
                 }
+
+                int gciIdx = json.IndexOf("\"git_check_interval_seconds\"");
+                if (gciIdx >= 0) {
+                    int colon = json.IndexOf(":", gciIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        GitCheckIntervalSec = int.Parse(json.Substring(colon + 1, comma - colon - 1).Trim());
+                    }
+                }
             }
         } catch (Exception ex) {
             Log("Error reading config: " + ex.Message);
@@ -291,36 +301,185 @@ public class Program {
         } catch {}
     }
 
-    public static void CheckGitUpdateBackground() {
-        try {
-            ProcessStartInfo psi = new ProcessStartInfo("git", "fetch origin master");
-            psi.WorkingDirectory = AppDir;
-            psi.CreateNoWindow = true;
-            psi.UseShellExecute = false;
-            Process p = Process.Start(psi);
-            if (p != null && p.WaitForExit(15000)) {
-                if (p.ExitCode == 0) {
-                    ProcessStartInfo pRev = new ProcessStartInfo("git", "rev-parse HEAD origin/master");
-                    pRev.WorkingDirectory = AppDir;
-                    pRev.RedirectStandardOutput = true;
-                    pRev.CreateNoWindow = true;
-                    pRev.UseShellExecute = false;
-                    Process p2 = Process.Start(pRev);
-                    string output = p2.StandardOutput.ReadToEnd();
-                    p2.WaitForExit(5000);
-                    string[] hashes = output.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (hashes.Length >= 2 && hashes[0] != hashes[1]) {
-                        Log(string.Format("[GitUpdate] New commit available on GitHub: {0}. Run update.cmd or NightModeService.exe update to apply.", hashes[1].Substring(0, Math.Min(7, hashes[1].Length))));
+    // ==========================================
+    // 🐙 ADVANCED GIT INTEGRATION ENGINE (OTA)
+    // ==========================================
+    public static class GitManager {
+        public static string RunGit(string args) {
+            try {
+                ProcessStartInfo psi = new ProcessStartInfo("git", args);
+                psi.WorkingDirectory = AppDir;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                using (Process p = Process.Start(psi)) {
+                    if (p != null && p.WaitForExit(15000)) {
+                        return p.StandardOutput.ReadToEnd().Trim();
                     }
                 }
+            } catch {}
+            return null;
+        }
+
+        public static bool HasGit() {
+            string ver = RunGit("--version");
+            return !string.IsNullOrEmpty(ver);
+        }
+
+        public static string GetCurrentBranch() {
+            return RunGit("rev-parse --abbrev-ref HEAD") ?? "master";
+        }
+
+        public static string GetCurrentCommit() {
+            return RunGit("rev-parse --short HEAD") ?? "unknown";
+        }
+
+        public static string GetCommitInfo() {
+            return RunGit("log -1 --format=\"%h - %s (%cr)\"") ?? "unknown";
+        }
+
+        public static string GetRemoteUrl() {
+            return RunGit("remote get-url origin") ?? "https://github.com/del0x3/nightshift-dimmer.git";
+        }
+
+        public static string GetSyncStatus() {
+            string remote = RunGit("rev-parse --short origin/master");
+            string local = GetCurrentCommit();
+            if (string.IsNullOrEmpty(remote) || string.IsNullOrEmpty(local)) return "Unknown (Network offline)";
+            if (remote == local) return "In Sync (Up to date)";
+            
+            string behindStr = RunGit("rev-list --count HEAD..origin/master");
+            string aheadStr = RunGit("rev-list --count origin/master..HEAD");
+            int behind = 0, ahead = 0;
+            int.TryParse(behindStr, out behind);
+            int.TryParse(aheadStr, out ahead);
+
+            if (behind > 0 && ahead > 0) return string.Format("Diverged ({0} ahead, {1} behind)", ahead, behind);
+            if (behind > 0) return string.Format("Behind origin/master by {0} commit(s) (New version ready)", behind);
+            if (ahead > 0) return string.Format("Ahead of origin/master by {0} commit(s)", ahead);
+            return "In Sync (Up to date)";
+        }
+
+        public static bool IsWorkingTreeDirty() {
+            string status = RunGit("status --porcelain");
+            return !string.IsNullOrEmpty(status);
+        }
+
+        public static void PrintTelemetry() {
+            Console.WriteLine("========================================");
+            Console.WriteLine("🐙 NightShift Dimmer - Git Telemetry");
+            Console.WriteLine("========================================");
+            Console.WriteLine("Git Installed:     " + (HasGit() ? "Yes" : "No"));
+            Console.WriteLine("Repository:        del0x3/nightshift-dimmer");
+            Console.WriteLine("Remote URL:        " + GetRemoteUrl());
+            Console.WriteLine("Active Branch:     " + GetCurrentBranch());
+            Console.WriteLine("Active Commit:     " + GetCommitInfo());
+            Console.WriteLine("Sync Status:       " + GetSyncStatus());
+            Console.WriteLine("Working Tree:      " + (IsWorkingTreeDirty() ? "Dirty (Local modifications)" : "Clean"));
+            Console.WriteLine("Auto-OTA Engine:   " + (AutoUpdateGit ? "Active (Every " + GitCheckIntervalSec + "s)" : "Disabled"));
+            Console.WriteLine("========================================");
+        }
+
+        public static bool CheckAndPerformHotSwap(bool force = false) {
+            Log("[GitOTA] Checking for remote updates on GitHub...");
+            RunGit("fetch origin master");
+            string local = GetCurrentCommit();
+            string remote = RunGit("rev-parse --short origin/master");
+
+            if (string.IsNullOrEmpty(remote)) {
+                Log("[GitOTA] GitHub unreachable. Skipping update check.");
+                return false;
             }
-        } catch {}
+
+            if (local == remote && !force) {
+                Log("[GitOTA] Service is up to date (" + local + ").");
+                return false;
+            }
+
+            Log(string.Format("[GitOTA] Update detected: {0} -> {1}! Initiating Zero-Downtime Hot-Swap...", local, remote));
+            string pullOut = RunGit("pull origin master");
+            Log("[GitOTA] git pull: " + (pullOut ?? "done"));
+
+            // Compile into staged binary NightModeService.next.exe
+            string nextExe = Path.Combine(AppDir, "NightModeService.next.exe");
+            string csFile = Path.Combine(AppDir, "NightModeService.cs");
+            string csc = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"Microsoft.NET\Framework64\v4.0.30319\csc.exe");
+            if (!File.Exists(csc)) {
+                csc = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"Microsoft.NET\Framework\v4.0.30319\csc.exe");
+            }
+
+            ProcessStartInfo psi = new ProcessStartInfo(csc, 
+                string.Format("/target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /out:\"{0}\" \"{1}\"", nextExe, csFile));
+            psi.CreateNoWindow = true;
+            psi.UseShellExecute = false;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+
+            using (Process p = Process.Start(psi)) {
+                p.WaitForExit(30000);
+                if (p.ExitCode != 0) {
+                    string err = p.StandardError.ReadToEnd() + "\n" + p.StandardOutput.ReadToEnd();
+                    Log("[GitOTA] BUILD FAILED ON NEW COMMIT! Reverting git to " + local + "...\n" + err);
+                    RunGit("reset --hard " + local);
+                    if (File.Exists(nextExe)) try { File.Delete(nextExe); } catch {}
+                    return false;
+                }
+            }
+
+            Log("[GitOTA] New binary built successfully! Spawning hot-swap handover...");
+            
+            // Spawn nextExe with --hotswap <currentPid>
+            int curId = Process.GetCurrentProcess().Id;
+            ProcessStartInfo swapPsi = new ProcessStartInfo(nextExe, "--hotswap " + curId);
+            swapPsi.WorkingDirectory = AppDir;
+            swapPsi.UseShellExecute = false;
+            Process.Start(swapPsi);
+
+            return true;
+        }
+
+        public static void Rollback() {
+            Log("[GitOTA] User requested rollback to HEAD~1...");
+            RunGit("reset --hard HEAD~1");
+            CheckAndPerformHotSwap(true);
+        }
+
+        public static void Repair() {
+            Log("[GitOTA] Self-repair: restoring tracked files from Git...");
+            RunGit("checkout -- .");
+            Log("[GitOTA] Repository files verified and restored.");
+        }
     }
 
     public static void Main(string[] args) {
         AppDomain.CurrentDomain.UnhandledException += (s, e) => {
             Log("CRITICAL UNHANDLED: " + e.ExceptionObject);
         };
+
+        // Handle Hot-Swap Handover Execution
+        if (args.Length >= 2 && args[0] == "--hotswap") {
+            int oldPid;
+            if (int.TryParse(args[1], out oldPid)) {
+                try {
+                    Process oldProc = Process.GetProcessById(oldPid);
+                    // Wait up to 6 seconds for old instance to gracefully exit
+                    oldProc.WaitForExit(6000);
+                } catch {}
+            }
+
+            // Replace main executable
+            string mainExe = Path.Combine(AppDir, "NightModeService.exe");
+            string thisExe = Process.GetCurrentProcess().MainModule.FileName;
+            try {
+                if (!string.Equals(thisExe, mainExe, StringComparison.OrdinalIgnoreCase)) {
+                    File.Copy(thisExe, mainExe, true);
+                    // Relaunch the production binary
+                    Process.Start(new ProcessStartInfo(mainExe) { WorkingDirectory = AppDir, UseShellExecute = false });
+                    return;
+                }
+            } catch {}
+        }
 
         if (args.Length > 0) {
             InitConsoleOutput();
@@ -338,17 +497,33 @@ public class Program {
                 return;
             }
 
-            if (cmd == "update") {
-                Console.WriteLine("[NightMode] Triggering Git update...");
-                string updater = Path.Combine(AppDir, "update.cmd");
-                if (File.Exists(updater)) {
-                    ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"" + updater + "\"");
-                    psi.WorkingDirectory = AppDir;
-                    psi.UseShellExecute = true;
-                    Process.Start(psi);
+            if (cmd == "git") {
+                GitManager.PrintTelemetry();
+                return;
+            }
+
+            if (cmd == "update" || cmd == "pull") {
+                Console.WriteLine("[NightMode] Triggering Git OTA update...");
+                bool updated = GitManager.CheckAndPerformHotSwap(true);
+                if (!updated) {
+                    Console.WriteLine("[NightMode] System is already on latest version.");
                 } else {
-                    Console.WriteLine("[Error] update.cmd not found.");
+                    Console.WriteLine("[NightMode] Hot-swap handoff in progress!");
                 }
+                return;
+            }
+
+            if (cmd == "rollback") {
+                Console.WriteLine("[NightMode] Rolling back to previous commit...");
+                GitManager.Rollback();
+                Console.WriteLine("[NightMode] Rollback initiated.");
+                return;
+            }
+
+            if (cmd == "repair") {
+                Console.WriteLine("[NightMode] Repairing workspace files from Git...");
+                GitManager.Repair();
+                Console.WriteLine("[NightMode] Repository integrity restored.");
                 return;
             }
 
@@ -425,7 +600,8 @@ public class Program {
                 Console.WriteLine("Night Brightness:  " + NightBrightness + "%");
                 Console.WriteLine("Day Brightness:    " + DayBrightness + "%");
                 Console.WriteLine("Adjust Brightness: " + AdjustBrightness);
-                Console.WriteLine("Auto Update Git:   " + AutoUpdateGit);
+                Console.WriteLine("Git Branch/Commit: " + GitManager.GetCurrentBranch() + " (" + GitManager.GetCurrentCommit() + ")");
+                Console.WriteLine("Git Sync Status:   " + GitManager.GetSyncStatus());
                 Process[] procs = Process.GetProcessesByName("NightModeService");
                 Console.WriteLine("Service Running:   " + (procs.Length > 0 ? "Yes (PID " + procs[0].Id + ")" : "No"));
                 Console.WriteLine("========================================");
@@ -437,7 +613,6 @@ public class Program {
         bool createdNew;
         using (Mutex mutex = new Mutex(true, @"Global\NightModeServiceSingleton", out createdNew)) {
             if (!createdNew) {
-                // Another instance is already running
                 return;
             }
 
@@ -451,13 +626,13 @@ public class Program {
             EnsureWindowsColorFilterDisabled();
 
             int currentId = Process.GetCurrentProcess().Id;
-            Log(string.Format("Service started (PID {0}). Schedule: {1} - {2}. WhiteDim: {3}. NightBrightness: {4}%. DayBrightness: {5}%", 
-                currentId, StartTime, EndTime, WhiteDim, NightBrightness, DayBrightness));
+            Log(string.Format("Service started (PID {0}). Schedule: {1} - {2}. Dim: {3}. NightBright: {4}%. DayBright: {5}%. Commit: {6}", 
+                currentId, StartTime, EndTime, WhiteDim, NightBrightness, DayBrightness, GitManager.GetCurrentCommit()));
 
             bool initOk = MagInitialize();
             Log("MagInitialize on Default desktop: " + initOk);
 
-            // Register system events for sleep/wake, session lock/unlock, and monitor connect/disconnect
+            // Register system events
             SystemEvents.PowerModeChanged += (sender, e) => {
                 if (e.Mode == PowerModes.Resume) {
                     Log("System resumed from sleep/hibernate. Forcing display state refresh.");
@@ -489,7 +664,7 @@ public class Program {
                         break;
                     }
 
-                    // Check for time jumps (e.g. sleep/hibernate wake-up without event)
+                    // Check for time jumps
                     DateTime nowUtc = DateTime.UtcNow;
                     double elapsedSec = (nowUtc - lastTickTime).TotalSeconds;
                     if (elapsedSec > 5.0) {
@@ -500,7 +675,7 @@ public class Program {
 
                     if (forceRefresh) {
                         forceRefresh = false;
-                        isNightActive = null; // Forces immediate re-application of target state
+                        isNightActive = null;
                         AttachToDefaultDesktop();
                         MagInitialize();
                     }
@@ -511,10 +686,10 @@ public class Program {
                         EnsureWindowsColorFilterDisabled();
                     }
 
-                    // Background Git update check every 12 hours (43200 ticks)
-                    if (AutoUpdateGit && tick > 0 && tick % 43200 == 0) {
+                    // Autonomous background Git OTA check (default: every hour)
+                    if (AutoUpdateGit && tick > 0 && tick % GitCheckIntervalSec == 0) {
                         ThreadPool.QueueUserWorkItem(state => {
-                            CheckGitUpdateBackground();
+                            GitManager.CheckAndPerformHotSwap(false);
                         });
                     }
 
@@ -537,7 +712,6 @@ public class Program {
                             Log("ApplyNightEffect returned: " + res);
                             isNightActive = true;
                         } else {
-                            // Periodic health check every 5 seconds: ensure night matrix is still active
                             if (tick % 5 == 0) {
                                 VerifyAndEnforceDisplay(true);
                             }
@@ -552,7 +726,6 @@ public class Program {
                             SetBrightness(DayBrightness);
                             isNightActive = false;
                         } else {
-                            // Periodic health check every 5 seconds: ensure screen is truly in day mode
                             if (tick % 5 == 0) {
                                 VerifyAndEnforceDisplay(false);
                             }
