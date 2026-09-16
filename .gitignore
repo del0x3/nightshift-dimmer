@@ -5,6 +5,10 @@ service.stop
 override.txt
 *.tmp
 
+# Build and hot-swap artifacts
+*.next.exe
+*.old
+
 # Windows system files
 Thumbs.db
 desktop.ini
