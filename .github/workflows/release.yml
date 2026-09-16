@@ -1,0 +1,58 @@
+name: Release & Distribution
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Build Production Executable
+      shell: cmd
+      run: |
+        call build.cmd /ci
+
+    - name: Package Release ZIP
+      shell: powershell
+      run: |
+        $tag = "${{ github.ref_name }}"
+        $zipName = "NightShift-Dimmer-$tag-Windows-x64.zip"
+        $filesToInclude = @(
+          "NightModeService.exe",
+          "config.json",
+          "README.md",
+          "LICENSE",
+          "install.cmd",
+          "uninstall.cmd",
+          "start.cmd",
+          "stop.cmd",
+          "toggle.cmd",
+          "status.cmd",
+          "update.cmd",
+          "rollback.cmd",
+          "dashboard.cmd",
+          "healthcheck.cmd",
+          "build.cmd"
+        )
+        Compress-Archive -Path $filesToInclude -DestinationPath $zipName
+        $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
+        Write-Host "Release SHA256: $hash"
+        "$hash  $zipName" | Out-File -FilePath "SHA256SUMS.txt" -Encoding utf8
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: NightShift Dimmer ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+        files: |
+          NightShift-Dimmer-*.zip
+          SHA256SUMS.txt

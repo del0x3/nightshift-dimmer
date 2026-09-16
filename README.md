@@ -51,6 +51,8 @@ Done! The daemon will now automatically manage your display according to your sc
 | [`build.cmd`](build.cmd) | Recompiles `NightModeService.exe` from source using Windows' built-in C# compiler. |
 | [`update.cmd`](update.cmd) | Pulls latest changes from GitHub, rebuilds, and restarts the service. |
 | [`rollback.cmd`](rollback.cmd) | Reverts repository to previous commit, recompiles, and hot-swaps service. |
+| [`dashboard.cmd`](dashboard.cmd) | Opens live real-time ASCII telemetry dashboard in terminal. |
+| [`healthcheck.cmd`](healthcheck.cmd) | Runs deep 6-point diagnostics of daemon, DWM, registry, and Git. |
 
 ---
 
