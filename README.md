@@ -48,11 +48,13 @@ Done! The daemon will now automatically manage your display according to your sc
 | [`stop.cmd`](stop.cmd) | Stops the daemon and instantly restores normal full-color display. |
 | [`toggle.cmd`](toggle.cmd) | Instantly toggles between Day (color) and Night (grayscale + dimming) mode. |
 | [`status.cmd`](status.cmd) | Displays active configuration, current local time, and operational status. |
+| [`dashboard.cmd`](dashboard.cmd) | Opens live real-time ASCII telemetry dashboard with cycle progress bar. |
+| [`healthcheck.cmd`](healthcheck.cmd) | Runs deep 6-point diagnostics of daemon, DWM, registry, and Git. |
+| [`selftest.cmd`](selftest.cmd) | Runs automated 8-component hardware self-test suite. |
+| [`sync.cmd`](sync.cmd) | Forces full Git sync, self-repair of core files, and zero-downtime hot-swap. |
 | [`build.cmd`](build.cmd) | Recompiles `NightModeService.exe` from source using Windows' built-in C# compiler. |
 | [`update.cmd`](update.cmd) | Pulls latest changes from GitHub, rebuilds, and restarts the service. |
 | [`rollback.cmd`](rollback.cmd) | Reverts repository to previous commit, recompiles, and hot-swaps service. |
-| [`dashboard.cmd`](dashboard.cmd) | Opens live real-time ASCII telemetry dashboard in terminal. |
-| [`healthcheck.cmd`](healthcheck.cmd) | Runs deep 6-point diagnostics of daemon, DWM, registry, and Git. |
 
 ---
 
@@ -123,8 +125,14 @@ NightModeService.exe update
 # Rollback to previous commit and hot-swap
 NightModeService.exe rollback
 
-# Self-repair any missing or corrupted workspace files from Git
-NightModeService.exe repair
+# Show real-time telemetry HUD (use --live for auto-refreshing dashboard)
+NightModeService.exe hud --live
+
+# Run comprehensive 8-point hardware & subsystem self-test
+NightModeService.exe selftest
+
+# Force Git synchronization, self-repair of core files, and OTA hot-swap
+NightModeService.exe sync
 
 # Clear any manual override and return to automatic schedule
 NightModeService.exe reset

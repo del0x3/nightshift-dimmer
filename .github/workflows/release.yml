@@ -39,6 +39,9 @@ jobs:
           "rollback.cmd",
           "dashboard.cmd",
           "healthcheck.cmd",
+          "healthcheck.ps1",
+          "selftest.cmd",
+          "sync.cmd",
           "build.cmd"
         )
         Compress-Archive -Path $filesToInclude -DestinationPath $zipName

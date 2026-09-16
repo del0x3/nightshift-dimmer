@@ -41,9 +41,16 @@ jobs:
           config.json
           README.md
           install.cmd
+          uninstall.cmd
           update.cmd
           rollback.cmd
           start.cmd
           stop.cmd
           toggle.cmd
           status.cmd
+          dashboard.cmd
+          healthcheck.cmd
+          healthcheck.ps1
+          selftest.cmd
+          sync.cmd
+          build.cmd
