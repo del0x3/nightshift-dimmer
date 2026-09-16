@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo [NightMode] Building NightModeService.exe from source...
@@ -14,13 +14,13 @@ if not exist "%CSC%" (
 )
 
 if /i "%~1" == "/test" (
-    "%CSC%" /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /out:"%TEMP%\NightModeService.test.exe" "%~dp0NightModeService.cs" >nul 2>&1
+    "%CSC%" /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /out:"%TEMP%\NightModeService.test.exe" "%~dp0NightModeService.cs" >nul 2>&1
     set ERR=!errorlevel!
     if exist "%TEMP%\NightModeService.test.exe" del "%TEMP%\NightModeService.test.exe" >nul 2>&1
     exit /b !ERR!
 )
 
-"%CSC%" /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /out:"%~dp0NightModeService.exe" "%~dp0NightModeService.cs"
+"%CSC%" /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /out:"%~dp0NightModeService.exe" "%~dp0NightModeService.cs"
 
 if %errorlevel% equ 0 (
     echo [NightMode] Build succeeded: NightModeService.exe created.

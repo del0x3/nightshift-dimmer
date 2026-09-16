@@ -13,8 +13,8 @@ powershell -NoProfile -Command "Remove-Item ([Environment]::GetFolderPath('Start
 :: Remove Windows autostart delay for instantaneous startup
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize" /v "StartupDelayInMSec" /t REG_DWORD /d 0 /f >nul 2>&1
 
-:: Register Task Scheduler watchdog as secondary failsafe (restarts service if ever terminated)
-schtasks /create /tn "NightModeWatchdog" /tr "\"%~dp0NightModeService.exe\"" /sc minute /mo 60 /f >nul 2>&1
+:: Register Task Scheduler watchdog with battery resilience (5-minute heartbeat)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$a = New-ScheduledTaskAction -Execute '%~dp0NightModeService.exe'; $t = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5); $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable; Register-ScheduledTask -TaskName 'NightModeWatchdog' -Action $a -Trigger $t -Settings $s -Force" >nul 2>&1
 
 echo [NightMode] Starting background service...
 start "" "%~dp0NightModeService.exe"

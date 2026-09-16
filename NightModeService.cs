@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Drawing;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -56,10 +57,15 @@ public class Program {
     public static int NightBrightness = 65;                   // Backlight level at night
     public static int DayBrightness = 70;                     // Backlight level during day
     public static bool AdjustBrightness = true;
+    public static bool SmoothTransition = true;
+    public static int TransitionDurationMs = 1800;
+    public static bool TrayIconEnabled = true;
     public static bool AutoUpdateGit = true;
-    public static int GitCheckIntervalSec = 3600;             // 1 hour check
+    public static int GitCheckIntervalSec = 3600;
 
     private static volatile bool forceRefresh = false;
+    private static Process guardianProcess = null;
+    private static NotifyIcon trayIcon = null;
 
     public static void TriggerForceRefresh(string reason) {
         Log(string.Format("[SelfDefense] Instant refresh triggered: {0}", reason));
@@ -186,6 +192,35 @@ public class Program {
                     }
                 }
 
+                int smIdx = json.IndexOf("\"smooth_transition\"");
+                if (smIdx >= 0) {
+                    int colon = json.IndexOf(":", smIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        string val = json.Substring(colon + 1, comma - colon - 1).Trim().ToLower();
+                        SmoothTransition = val.Contains("true");
+                    }
+                }
+
+                int tdIdx = json.IndexOf("\"transition_duration_ms\"");
+                if (tdIdx >= 0) {
+                    int colon = json.IndexOf(":", tdIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        TransitionDurationMs = int.Parse(json.Substring(colon + 1, comma - colon - 1).Trim());
+                    }
+                }
+
+                int tiIdx = json.IndexOf("\"tray_icon\"");
+                if (tiIdx >= 0) {
+                    int colon = json.IndexOf(":", tiIdx);
+                    int comma = json.IndexOfAny(new char[] { ',', '}', '\r', '\n' }, colon + 1);
+                    if (colon >= 0 && comma > colon) {
+                        string val = json.Substring(colon + 1, comma - colon - 1).Trim().ToLower();
+                        TrayIconEnabled = val.Contains("true");
+                    }
+                }
+
                 int augIdx = json.IndexOf("\"auto_update_git\"");
                 if (augIdx >= 0) {
                     int colon = json.IndexOf(":", augIdx);
@@ -236,7 +271,7 @@ public class Program {
         });
     }
 
-    public static bool ApplyNightEffect(float dim) {
+    public static MAGCOLOREFFECT GetNightMatrix(float dim) {
         float rw = 0.2126f * dim;
         float gw = 0.7152f * dim;
         float bw = 0.0722f * dim;
@@ -247,29 +282,80 @@ public class Program {
         effect.m20 = bw; effect.m21 = bw; effect.m22 = bw;
         effect.m33 = 1.0f;
         effect.m44 = 1.0f;
-
-        bool res = MagSetFullscreenColorEffect(ref effect);
-        if (!res) {
-            AttachToDefaultDesktop();
-            MagInitialize();
-            res = MagSetFullscreenColorEffect(ref effect);
-        }
-        return res;
+        return effect;
     }
 
-    public static bool ApplyDayEffect() {
+    public static MAGCOLOREFFECT GetDayMatrix() {
         MAGCOLOREFFECT id = new MAGCOLOREFFECT();
         id.m00 = 1.0f;
         id.m11 = 1.0f;
         id.m22 = 1.0f;
         id.m33 = 1.0f;
         id.m44 = 1.0f;
+        return id;
+    }
 
-        bool res = MagSetFullscreenColorEffect(ref id);
+    public static void SmoothMatrixTransition(MAGCOLOREFFECT to, int durationMs = 1800) {
+        MAGCOLOREFFECT from = new MAGCOLOREFFECT();
+        if (!MagGetFullscreenColorEffect(ref from)) {
+            MagSetFullscreenColorEffect(ref to);
+            return;
+        }
+
+        int steps = 36;
+        int sleepMs = Math.Max(10, durationMs / steps);
+
+        for (int i = 1; i <= steps; i++) {
+            float t = (float)i / steps;
+            // Smoothstep curve: 3t^2 - 2t^3
+            float ease = t * t * (3.0f - 2.0f * t);
+
+            MAGCOLOREFFECT cur = new MAGCOLOREFFECT();
+            cur.m00 = from.m00 + (to.m00 - from.m00) * ease;
+            cur.m01 = from.m01 + (to.m01 - from.m01) * ease;
+            cur.m02 = from.m02 + (to.m02 - from.m02) * ease;
+            cur.m10 = from.m10 + (to.m10 - from.m10) * ease;
+            cur.m11 = from.m11 + (to.m11 - from.m11) * ease;
+            cur.m12 = from.m12 + (to.m12 - from.m12) * ease;
+            cur.m20 = from.m20 + (to.m20 - from.m20) * ease;
+            cur.m21 = from.m21 + (to.m21 - from.m21) * ease;
+            cur.m22 = from.m22 + (to.m22 - from.m22) * ease;
+            cur.m33 = 1.0f;
+            cur.m44 = 1.0f;
+
+            MagSetFullscreenColorEffect(ref cur);
+            Thread.Sleep(sleepMs);
+        }
+    }
+
+    public static bool ApplyNightEffect(float dim, bool smooth = false) {
+        MAGCOLOREFFECT target = GetNightMatrix(dim);
+        if (smooth && SmoothTransition) {
+            SmoothMatrixTransition(target, TransitionDurationMs);
+            return true;
+        }
+
+        bool res = MagSetFullscreenColorEffect(ref target);
         if (!res) {
             AttachToDefaultDesktop();
             MagInitialize();
-            res = MagSetFullscreenColorEffect(ref id);
+            res = MagSetFullscreenColorEffect(ref target);
+        }
+        return res;
+    }
+
+    public static bool ApplyDayEffect(bool smooth = false) {
+        MAGCOLOREFFECT target = GetDayMatrix();
+        if (smooth && SmoothTransition) {
+            SmoothMatrixTransition(target, TransitionDurationMs);
+            return true;
+        }
+
+        bool res = MagSetFullscreenColorEffect(ref target);
+        if (!res) {
+            AttachToDefaultDesktop();
+            MagInitialize();
+            res = MagSetFullscreenColorEffect(ref target);
         }
         return res;
     }
@@ -287,13 +373,13 @@ public class Program {
             bool looksLikeNight = Math.Abs(cur.m00 - cur.m01) < 0.05f && cur.m00 < 0.5f && cur.m00 > 0.01f;
             if (!looksLikeNight) {
                 Log("HealthCheck: Matrix lost night mode! Re-applying...");
-                return ApplyNightEffect(WhiteDim);
+                return ApplyNightEffect(WhiteDim, false);
             }
         } else {
             bool looksLikeIdentity = Math.Abs(cur.m00 - 1.0f) < 0.05f && Math.Abs(cur.m11 - 1.0f) < 0.05f && Math.Abs(cur.m01) < 0.05f;
             if (!looksLikeIdentity) {
                 Log("HealthCheck: Matrix is not in day mode! Re-applying day effect...");
-                return ApplyDayEffect();
+                return ApplyDayEffect(false);
             }
         }
         return true;
@@ -307,6 +393,129 @@ public class Program {
                     key.SetValue("NightModeService", "\"" + exePath + "\"");
                 }
             }
+        } catch {}
+    }
+
+    // ========================================================
+    // 🛡️ TWIN-PROCESS GUARDIAN SHIELD (MUTUAL RESURRECTION)
+    // ========================================================
+    public static void RunGuardianWatchdog(int workerPid) {
+        try {
+            Process worker = Process.GetProcessById(workerPid);
+            worker.WaitForExit();
+        } catch {}
+
+        if (File.Exists(StopFile)) {
+            return;
+        }
+
+        // Worker was terminated unexpectedly! Resurrect immediately!
+        Log("[Guardian] ALERT: Worker process died unexpectedly! Resurrecting worker immediately...");
+        string mainExe = Path.Combine(AppDir, "NightModeService.exe");
+        try {
+            ProcessStartInfo psi = new ProcessStartInfo(mainExe);
+            psi.WorkingDirectory = AppDir;
+            psi.UseShellExecute = false;
+            Process.Start(psi);
+        } catch {}
+    }
+
+    public static void EnsureGuardianProcess(int workerId) {
+        try {
+            if (guardianProcess != null && !guardianProcess.HasExited) return;
+
+            string exePath = Path.Combine(AppDir, "NightModeService.exe");
+            ProcessStartInfo psi = new ProcessStartInfo(exePath, "--guardian " + workerId);
+            psi.WorkingDirectory = AppDir;
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            guardianProcess = Process.Start(psi);
+        } catch {}
+    }
+
+    // ========================================================
+    // 🖼️ DYNAMIC SYSTEM TRAY ICON (STATUS & MENU)
+    // ========================================================
+    private static Icon CreateDynamicIcon(bool isNight) {
+        using (Bitmap bmp = new Bitmap(32, 32)) {
+            using (Graphics g = Graphics.FromImage(bmp)) {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.Clear(Color.Transparent);
+
+                if (isNight) {
+                    // Draw crescent moon
+                    using (Brush b = new SolidBrush(Color.FromArgb(147, 197, 253))) {
+                        g.FillEllipse(b, 4, 4, 24, 24);
+                    }
+                    using (Brush b = new SolidBrush(Color.FromArgb(30, 41, 59))) {
+                        g.FillEllipse(b, 10, 2, 20, 24);
+                    }
+                } else {
+                    // Draw golden sun
+                    using (Brush b = new SolidBrush(Color.FromArgb(250, 204, 21))) {
+                        g.FillEllipse(b, 6, 6, 20, 20);
+                    }
+                    using (Pen p = new Pen(Color.FromArgb(234, 179, 8), 2)) {
+                        g.DrawEllipse(p, 6, 6, 20, 20);
+                    }
+                }
+            }
+            return Icon.FromHandle(bmp.GetHicon());
+        }
+    }
+
+    public static void UpdateTrayIcon(bool isNight) {
+        try {
+            if (!TrayIconEnabled || trayIcon == null) return;
+            trayIcon.Icon = CreateDynamicIcon(isNight);
+            TimeSpan now = DateTime.Now.TimeOfDay;
+            TimeSpan remaining = isNight ? 
+                ((now < EndTime) ? (EndTime - now) : ((new TimeSpan(24, 0, 0) - now) + EndTime)) :
+                ((now < StartTime) ? (StartTime - now) : ((new TimeSpan(24, 0, 0) - now) + StartTime));
+            
+            string mode = isNight ? "Night Mode" : "Day Mode";
+            trayIcon.Text = string.Format("NightShift: {0} ({1:D2}h {2:D2}m left)", mode, remaining.Hours, remaining.Minutes);
+        } catch {}
+    }
+
+    public static void InitializeTrayIcon() {
+        if (!TrayIconEnabled) return;
+        try {
+            trayIcon = new NotifyIcon();
+            trayIcon.Icon = CreateDynamicIcon(IsNightTime());
+            trayIcon.Text = "NightShift Dimmer Daemon";
+            trayIcon.Visible = true;
+
+            ContextMenuStrip menu = new ContextMenuStrip();
+            menu.Items.Add("☀️ Force Day Mode", null, (s, e) => {
+                File.WriteAllText(OverrideFile, "off");
+                ApplyDayEffect(true);
+                SetBrightness(DayBrightness);
+                UpdateTrayIcon(false);
+            });
+            menu.Items.Add("🌙 Force Night Mode", null, (s, e) => {
+                File.WriteAllText(OverrideFile, "on");
+                ApplyNightEffect(WhiteDim, true);
+                SetBrightness(NightBrightness);
+                UpdateTrayIcon(true);
+            });
+            menu.Items.Add("🔄 Auto Schedule", null, (s, e) => {
+                if (File.Exists(OverrideFile)) File.Delete(OverrideFile);
+                TriggerForceRefresh("Tray auto schedule selected");
+            });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("📊 Open Live Dashboard", null, (s, e) => {
+                Process.Start(new ProcessStartInfo("cmd.exe", "/c \"\"" + Path.Combine(AppDir, "dashboard.cmd") + "\"\""));
+            });
+            menu.Items.Add("🐙 Check Git Updates", null, (s, e) => {
+                ThreadPool.QueueUserWorkItem(state => GitManager.CheckAndPerformHotSwap(true));
+            });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("❌ Stop Daemon", null, (s, e) => {
+                File.WriteAllText(StopFile, "stop");
+            });
+
+            trayIcon.ContextMenuStrip = menu;
         } catch {}
     }
 
@@ -467,7 +676,7 @@ public class Program {
             }
 
             ProcessStartInfo psi = new ProcessStartInfo(csc, 
-                string.Format("/target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /out:\"{0}\" \"{1}\"", nextExe, csFile));
+                string.Format("/target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /out:\"{0}\" \"{1}\"", nextExe, csFile));
             psi.CreateNoWindow = true;
             psi.UseShellExecute = false;
             psi.RedirectStandardOutput = true;
@@ -549,6 +758,7 @@ public class Program {
         } else {
             Console.WriteLine("  ● Daemon State:      STOPPED");
         }
+        Console.WriteLine("  ● Twin Guardian:     ACTIVE (Mutual resurrection shield)");
         Console.WriteLine("  ● Self-Defense ARR:  ACTIVE (Windows Application Recovery & Restart Hook)");
         Console.WriteLine("  ● Watchdog Daemon:   ACTIVE (5-min heartbeat via Task Scheduler)");
         Console.WriteLine("  ● Hardware Listener: ACTIVE (Zero-Latency HWND_MESSAGE native pump)");
@@ -561,6 +771,7 @@ public class Program {
         Console.WriteLine(string.Format("  ● Schedule:          {0} -> {1} (Kyiv Time)", StartTime.ToString(@"hh\:mm"), EndTime.ToString(@"hh\:mm")));
         Console.WriteLine(string.Format("  ● Target Backlight:  {0}% (Day: {1}%, Night: {2}%)", (isNight ? NightBrightness : DayBrightness), DayBrightness, NightBrightness));
         Console.WriteLine(string.Format("  ● White Point Dim:   {0:F2} (Peak Luminance capped to {1}%)", WhiteDim, (int)(WhiteDim * 100)));
+        Console.WriteLine(string.Format("  ● Smooth Fade:       {0} ({1} ms matrix interpolation)", SmoothTransition ? "ENABLED" : "DISABLED", TransitionDurationMs));
         Console.WriteLine("  ● GPU Matrix (DWM):  " + (gotMatrix ? "Online" : "Offline"));
         if (gotMatrix) {
             Console.WriteLine(string.Format("      [ {0,5:F2}  {1,5:F2}  {2,5:F2}  {3,5:F2}  {4,5:F2} ]", cur.m00, cur.m01, cur.m02, cur.m03, cur.m04));
@@ -584,6 +795,15 @@ public class Program {
         AppDomain.CurrentDomain.UnhandledException += (s, e) => {
             Log("CRITICAL UNHANDLED: " + e.ExceptionObject);
         };
+
+        // Handle Guardian Watchdog Instance
+        if (args.Length >= 2 && args[0] == "--guardian") {
+            int targetPid;
+            if (int.TryParse(args[1], out targetPid)) {
+                RunGuardianWatchdog(targetPid);
+                return;
+            }
+        }
 
         // Handle Hot-Swap Handover Execution
         if (args.Length >= 2 && args[0] == "--hotswap") {
@@ -615,7 +835,7 @@ public class Program {
                 File.WriteAllText(StopFile, "stop");
                 AttachToDefaultDesktop();
                 MagInitialize();
-                ApplyDayEffect();
+                ApplyDayEffect(false);
                 MagUninitialize();
                 SetBrightness(DayBrightness);
                 EnsureWindowsColorFilterDisabled();
@@ -671,13 +891,15 @@ public class Program {
                 AttachToDefaultDesktop();
                 MagInitialize();
                 if (next == "on") {
-                    ApplyNightEffect(WhiteDim);
+                    ApplyNightEffect(WhiteDim, true);
                     SetBrightness(NightBrightness);
+                    UpdateTrayIcon(true);
                     Console.WriteLine("Override toggled to: ON (Night Mode)");
                 } else {
-                    ApplyDayEffect();
+                    ApplyDayEffect(true);
                     SetBrightness(DayBrightness);
                     EnsureWindowsColorFilterDisabled();
+                    UpdateTrayIcon(false);
                     Console.WriteLine("Override toggled to: OFF (Day Mode)");
                 }
                 return;
@@ -688,8 +910,9 @@ public class Program {
                 File.WriteAllText(OverrideFile, "on");
                 AttachToDefaultDesktop();
                 MagInitialize();
-                ApplyNightEffect(WhiteDim);
+                ApplyNightEffect(WhiteDim, true);
                 SetBrightness(NightBrightness);
+                UpdateTrayIcon(true);
                 Console.WriteLine("Override set to: ON (Night Mode)");
                 return;
             }
@@ -699,9 +922,10 @@ public class Program {
                 File.WriteAllText(OverrideFile, "off");
                 AttachToDefaultDesktop();
                 MagInitialize();
-                ApplyDayEffect();
+                ApplyDayEffect(true);
                 SetBrightness(DayBrightness);
                 EnsureWindowsColorFilterDisabled();
+                UpdateTrayIcon(false);
                 Console.WriteLine("Override set to: OFF (Day Mode)");
                 return;
             }
@@ -730,6 +954,7 @@ public class Program {
                 Console.WriteLine("White Dim Factor:  " + WhiteDim);
                 Console.WriteLine("Night Brightness:  " + NightBrightness + "%");
                 Console.WriteLine("Day Brightness:    " + DayBrightness + "%");
+                Console.WriteLine("Smooth Transition: " + SmoothTransition + " (" + TransitionDurationMs + "ms)");
                 Console.WriteLine("Adjust Brightness: " + AdjustBrightness);
                 Console.WriteLine("Git Branch/Commit: " + GitManager.GetCurrentBranch() + " (" + GitManager.GetCurrentCommit() + ")");
                 Console.WriteLine("Git Sync Status:   " + GitManager.GetSyncStatus());
@@ -768,10 +993,27 @@ public class Program {
             bool initOk = MagInitialize();
             Log("MagInitialize on Default desktop: " + initOk);
 
+            // Spawn twin-process guardian
+            EnsureGuardianProcess(currentId);
+
+            // Instantaneous Config Hot-Reload via FileSystemWatcher
+            try {
+                FileSystemWatcher configWatcher = new FileSystemWatcher(AppDir, "config.json");
+                configWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
+                configWatcher.Changed += (s, e) => {
+                    Thread.Sleep(150); // Debounce
+                    LoadConfig();
+                    Log("[HotReload] config.json updated! New settings applied instantly.");
+                    TriggerForceRefresh("config.json modified");
+                };
+                configWatcher.EnableRaisingEvents = true;
+            } catch {}
+
             // Launch zero-latency Win32 message pump in background thread
             Thread msgThread = new Thread(() => {
                 try {
                     ZeroLatencyMessageReceiver receiver = new ZeroLatencyMessageReceiver();
+                    InitializeTrayIcon();
                     Application.Run();
                 } catch {}
             });
@@ -823,10 +1065,11 @@ public class Program {
                         MagInitialize();
                     }
 
-                    // Reload config and suppress Windows ColorFilter every 10 seconds
+                    // Every 10 seconds: keep guardian alive, suppress Windows ColorFilter, update tray
                     if (tick % 10 == 0) {
-                        LoadConfig();
+                        EnsureGuardianProcess(currentId);
                         EnsureWindowsColorFilterDisabled();
+                        UpdateTrayIcon(isNightActive == true);
                     }
 
                     // Autonomous background Git OTA check
@@ -851,9 +1094,10 @@ public class Program {
                             Log(string.Format("TRANSITION -> NIGHT MODE: Schedule ({0} - {1}). B&W + Dimmed White ({2}) + Brightness ({3}%)", 
                                 StartTime.ToString(@"hh\:mm"), EndTime.ToString(@"hh\:mm"), WhiteDim, NightBrightness));
                             SetBrightness(NightBrightness);
-                            bool res = ApplyNightEffect(WhiteDim);
+                            bool res = ApplyNightEffect(WhiteDim, true);
                             Log("ApplyNightEffect returned: " + res);
                             isNightActive = true;
+                            UpdateTrayIcon(true);
                         } else {
                             if (tick % 5 == 0) {
                                 VerifyAndEnforceDisplay(true);
@@ -864,10 +1108,11 @@ public class Program {
                             Log(string.Format("TRANSITION -> DAY MODE: Schedule ({0} - {1}). Restoring full color + Brightness ({2}%)", 
                                 StartTime.ToString(@"hh\:mm"), EndTime.ToString(@"hh\:mm"), DayBrightness));
                             EnsureWindowsColorFilterDisabled();
-                            bool res = ApplyDayEffect();
+                            bool res = ApplyDayEffect(true);
                             Log("ApplyDayEffect returned: " + res);
                             SetBrightness(DayBrightness);
                             isNightActive = false;
+                            UpdateTrayIcon(false);
                         } else {
                             if (tick % 5 == 0) {
                                 VerifyAndEnforceDisplay(false);
@@ -883,8 +1128,12 @@ public class Program {
                 Thread.Sleep(1000);
             }
 
+            if (trayIcon != null) {
+                try { trayIcon.Visible = false; trayIcon.Dispose(); } catch {}
+            }
+
             Log("Service exiting. Restoring default display...");
-            ApplyDayEffect();
+            ApplyDayEffect(false);
             MagUninitialize();
             SetBrightness(DayBrightness);
         }

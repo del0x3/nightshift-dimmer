@@ -5,5 +5,9 @@
   "night_brightness": 65,
   "day_brightness": 70,
   "adjust_brightness": true,
-  "auto_update_git": true
+  "smooth_transition": true,
+  "transition_duration_ms": 1800,
+  "tray_icon": true,
+  "auto_update_git": true,
+  "git_check_interval_seconds": 3600
 }

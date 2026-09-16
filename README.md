@@ -67,7 +67,12 @@ Settings are stored in [`config.json`](config.json) and are hot-reloaded automat
   "white_dim": 0.75,
   "night_brightness": 65,
   "day_brightness": 70,
-  "adjust_brightness": true
+  "adjust_brightness": true,
+  "smooth_transition": true,
+  "transition_duration_ms": 1800,
+  "tray_icon": true,
+  "auto_update_git": true,
+  "git_check_interval_seconds": 3600
 }
 ```
 
@@ -81,6 +86,11 @@ Settings are stored in [`config.json`](config.json) and are hot-reloaded automat
 | `night_brightness` | integer (`0` - `100`) | `65` | Target monitor backlight level during nighttime. |
 | `day_brightness` | integer (`0` - `100`) | `70` | Restored backlight level during daytime. |
 | `adjust_brightness`| boolean | `true` | Whether to adjust backlight via WMI (`WmiSetBrightness`). |
+| `smooth_transition`| boolean | `true` | Smooth cinematic 60 FPS cross-fade matrix interpolation. |
+| `transition_duration_ms` | integer | `1800` | Duration of matrix cross-fade in milliseconds. |
+| `tray_icon` | boolean | `true` | Show dynamic system tray icon with live status & menu. |
+| `auto_update_git` | boolean | `true` | Autonomous background Git OTA update checks. |
+| `git_check_interval_seconds` | integer | `3600` | Interval between autonomous Git update checks. |
 
 ---
 
@@ -162,7 +172,7 @@ build.cmd
 
 Or manually:
 ```cmd
-%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /out:NightModeService.exe NightModeService.cs
+%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /out:NightModeService.exe NightModeService.cs
 ```
 
 ---

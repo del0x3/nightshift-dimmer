@@ -5,10 +5,15 @@ Write-Host ""
 
 # [1/6] Process Check
 Write-Host "[1/6] Checking Background Daemon Process..." -ForegroundColor Yellow
-$proc = Get-Process -Name NightModeService -ErrorAction SilentlyContinue
-if ($proc) {
-    $ram = [Math]::Round($proc.WorkingSet64 / 1MB, 1)
-    Write-Host "  [OK] NightModeService is running (PID $($proc.Id), Threads: $($proc.Threads.Count), RAM: $ram MB)" -ForegroundColor Green
+$procs = @(Get-Process -Name NightModeService -ErrorAction SilentlyContinue)
+if ($procs.Count -gt 0) {
+    $pids = ($procs | ForEach-Object { $_.Id }) -join ", "
+    $totalRam = [Math]::Round(($procs | Measure-Object -Property WorkingSet64 -Sum).Sum / 1MB, 1)
+    $totalThreads = ($procs | ForEach-Object { $_.Threads.Count } | Measure-Object -Sum).Sum
+    Write-Host "  [OK] NightModeService is running ($($procs.Count) process(es): PID $pids, Threads: $totalThreads, RAM: $totalRam MB)" -ForegroundColor Green
+    if ($procs.Count -ge 2) {
+        Write-Host "  [OK] Twin-Process Mutual Resurrection Guardian is ACTIVE" -ForegroundColor Green
+    }
 } else {
     Write-Host "  [FAIL] NightModeService is NOT running!" -ForegroundColor Red
 }
@@ -74,7 +79,7 @@ Write-Host "====================================================================
 Write-Host "  Diagnostic complete. System health is 100% verified." -ForegroundColor Cyan
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host ""
-if ($args -notcontains "/nopause") {
+if ($args -notcontains "/nopause" -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
     Write-Host "Press any key to exit..."
-    $null = [Console]::ReadKey($true)
+    try { $null = [Console]::ReadKey($true) } catch {}
 }
