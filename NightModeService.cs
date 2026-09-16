@@ -25,6 +25,9 @@ public class Program {
     [DllImport("Magnification.dll", CallingConvention = CallingConvention.StdCall, SetLastError = true)]
     public static extern bool MagSetFullscreenColorEffect(ref MAGCOLOREFFECT pEffect);
 
+    [DllImport("Magnification.dll", CallingConvention = CallingConvention.StdCall, SetLastError = true)]
+    public static extern bool MagGetFullscreenColorEffect(ref MAGCOLOREFFECT pEffect);
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
 
@@ -35,17 +38,6 @@ public class Program {
     public static extern bool AttachConsole(int dwProcessId);
     private const int ATTACH_PARENT_PROCESS = -1;
 
-    public static void InitConsoleOutput() {
-        try {
-            if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-                var stream = Console.OpenStandardOutput();
-                var writer = new StreamWriter(stream, System.Text.Encoding.Default);
-                writer.AutoFlush = true;
-                Console.SetOut(writer);
-            }
-        } catch {}
-    }
-
     public const uint DESKTOP_ALL = 0x01FF;
 
     public static string AppDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -54,11 +46,11 @@ public class Program {
     public static string OverrideFile = Path.Combine(AppDir, "override.txt");
     public static string ConfigFile = Path.Combine(AppDir, "config.json");
 
-    public static TimeSpan StartTime = new TimeSpan(21, 0, 0); // 21:00 Kyiv
-    public static TimeSpan EndTime = new TimeSpan(5, 0, 0);   // 05:00 Kyiv
+    public static TimeSpan StartTime = new TimeSpan(21, 0, 0); // 21:00
+    public static TimeSpan EndTime = new TimeSpan(5, 0, 0);   // 05:00
     public static float WhiteDim = 0.75f;                     // Dim white point by 25%
-    public static int NightBrightness = 65;                   // Normal visibility brightness
-    public static int DayBrightness = 70;
+    public static int NightBrightness = 65;                   // Backlight level at night
+    public static int DayBrightness = 70;                     // Backlight level during day
     public static bool AdjustBrightness = true;
 
     private static volatile bool forceRefresh = false;
@@ -71,28 +63,38 @@ public class Program {
         } catch {}
     }
 
+    public static void InitConsoleOutput() {
+        try {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+            var stream = Console.OpenStandardOutput();
+            var writer = new StreamWriter(stream, System.Text.Encoding.Default);
+            writer.AutoFlush = true;
+            Console.SetOut(writer);
+        } catch {}
+    }
+
     public static void AttachToDefaultDesktop() {
         try {
             IntPtr hDesk = OpenDesktop("default", 0, false, DESKTOP_ALL);
             if (hDesk != IntPtr.Zero) {
-                bool res = SetThreadDesktop(hDesk);
-                Log("SetThreadDesktop('default'): " + res);
-            } else {
-                Log("OpenDesktop('default') returned 0. Error: " + Marshal.GetLastWin32Error());
+                SetThreadDesktop(hDesk);
             }
-        } catch (Exception ex) {
-            Log("AttachToDefaultDesktop exception: " + ex.Message);
-        }
+        } catch {}
     }
 
-    public static void DisableWindowsColorFilter() {
+    public static void EnsureWindowsColorFilterDisabled() {
         try {
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\ColorFiltering", true)) {
                 if (key != null) {
-                    object val = key.GetValue("Active");
-                    if (val != null && Convert.ToInt32(val) != 0) {
+                    object active = key.GetValue("Active");
+                    if (active != null && Convert.ToInt32(active) != 0) {
                         key.SetValue("Active", 0, RegistryValueKind.DWord);
-                        Log("Disabled conflicting Windows ColorFiltering registry key (Active=0)");
+                        Log("Enforced Windows ColorFiltering Active = 0");
+                    }
+                    object hotkey = key.GetValue("HotkeyEnabled");
+                    if (hotkey != null && Convert.ToInt32(hotkey) != 0) {
+                        key.SetValue("HotkeyEnabled", 0, RegistryValueKind.DWord);
+                        Log("Enforced Windows ColorFiltering HotkeyEnabled = 0");
                     }
                 }
             }
@@ -233,6 +235,33 @@ public class Program {
         return res;
     }
 
+    public static bool VerifyAndEnforceDisplay(bool isNight) {
+        MAGCOLOREFFECT cur = new MAGCOLOREFFECT();
+        bool ok = MagGetFullscreenColorEffect(ref cur);
+        if (!ok) {
+            AttachToDefaultDesktop();
+            MagInitialize();
+            ok = MagGetFullscreenColorEffect(ref cur);
+        }
+
+        if (isNight) {
+            // Check if current matrix represents night effect (m00 approx equals m01 and < 0.5)
+            bool looksLikeNight = Math.Abs(cur.m00 - cur.m01) < 0.05f && cur.m00 < 0.5f && cur.m00 > 0.01f;
+            if (!looksLikeNight) {
+                Log("HealthCheck: Matrix lost night mode! Re-applying...");
+                return ApplyNightEffect(WhiteDim);
+            }
+        } else {
+            // Check if current matrix is identity (m00 == 1, m11 == 1, m22 == 1, m01 == 0)
+            bool looksLikeIdentity = Math.Abs(cur.m00 - 1.0f) < 0.05f && Math.Abs(cur.m11 - 1.0f) < 0.05f && Math.Abs(cur.m01) < 0.05f;
+            if (!looksLikeIdentity) {
+                Log("HealthCheck: Matrix is not in day mode! Re-applying day effect...");
+                return ApplyDayEffect();
+            }
+        }
+        return true;
+    }
+
     public static void EnsureAutostart() {
         try {
             string exePath = Path.Combine(AppDir, "NightModeService.exe");
@@ -260,7 +289,7 @@ public class Program {
                 ApplyDayEffect();
                 MagUninitialize();
                 SetBrightness(DayBrightness);
-                DisableWindowsColorFilter();
+                EnsureWindowsColorFilterDisabled();
                 Console.WriteLine("Sent stop signal to NightModeService and restored display.");
                 return;
             }
@@ -284,7 +313,7 @@ public class Program {
                 } else {
                     ApplyDayEffect();
                     SetBrightness(DayBrightness);
-                    DisableWindowsColorFilter();
+                    EnsureWindowsColorFilterDisabled();
                     Console.WriteLine("Override toggled to: OFF (Day Mode)");
                 }
                 return;
@@ -308,7 +337,7 @@ public class Program {
                 MagInitialize();
                 ApplyDayEffect();
                 SetBrightness(DayBrightness);
-                DisableWindowsColorFilter();
+                EnsureWindowsColorFilterDisabled();
                 Console.WriteLine("Override set to: OFF (Day Mode)");
                 return;
             }
@@ -345,119 +374,133 @@ public class Program {
             }
         }
 
-        // Kill any previous instance so this new one takes over immediately
-        int currentId = Process.GetCurrentProcess().Id;
-        Process[] existing = Process.GetProcessesByName("NightModeService");
-        foreach (Process p in existing) {
-            if (p.Id != currentId) {
-                try {
-                    p.Kill();
-                    p.WaitForExit(1000);
-                } catch {}
+        // Single instance guard via named Mutex
+        bool createdNew;
+        using (Mutex mutex = new Mutex(true, @"Global\NightModeServiceSingleton", out createdNew)) {
+            if (!createdNew) {
+                // Another instance is already running
+                return;
             }
-        }
 
-        if (File.Exists(StopFile)) {
-            try { File.Delete(StopFile); } catch {}
-        }
+            if (File.Exists(StopFile)) {
+                try { File.Delete(StopFile); } catch {}
+            }
 
-        // ATTACH TO USER'S INTERACTIVE DESKTOP
-        AttachToDefaultDesktop();
+            AttachToDefaultDesktop();
+            LoadConfig();
+            EnsureAutostart();
+            EnsureWindowsColorFilterDisabled();
 
-        LoadConfig();
-        EnsureAutostart();
+            int currentId = Process.GetCurrentProcess().Id;
+            Log(string.Format("Service started (PID {0}). Schedule: {1} - {2}. WhiteDim: {3}. NightBrightness: {4}%. DayBrightness: {5}%", 
+                currentId, StartTime, EndTime, WhiteDim, NightBrightness, DayBrightness));
 
-        Log(string.Format("Service started (PID {0}). Schedule: {1} - {2}. WhiteDim: {3}. NightBrightness: {4}%. DayBrightness: {5}%", 
-            currentId, StartTime, EndTime, WhiteDim, NightBrightness, DayBrightness));
+            bool initOk = MagInitialize();
+            Log("MagInitialize on Default desktop: " + initOk);
 
-        bool initOk = MagInitialize();
-        Log("MagInitialize on Default desktop: " + initOk);
+            // Register system events for sleep/wake, session lock/unlock, and monitor connect/disconnect
+            SystemEvents.PowerModeChanged += (sender, e) => {
+                if (e.Mode == PowerModes.Resume) {
+                    Log("System resumed from sleep/hibernate. Forcing display state refresh.");
+                    forceRefresh = true;
+                }
+            };
 
-        // Always check and clear conflicting native Windows ColorFilter
-        DisableWindowsColorFilter();
+            SystemEvents.SessionSwitch += (sender, e) => {
+                if (e.Reason == SessionSwitchReason.SessionUnlock || e.Reason == SessionSwitchReason.SessionLogon) {
+                    Log("User session unlocked/logon detected. Forcing display state refresh.");
+                    forceRefresh = true;
+                }
+            };
 
-        // Register power & session events to gracefully handle sleep / wake / unlock
-        SystemEvents.PowerModeChanged += (sender, e) => {
-            if (e.Mode == PowerModes.Resume) {
-                Log("System resumed from sleep/hibernate. Forcing display state refresh.");
+            SystemEvents.DisplaySettingsChanged += (sender, e) => {
+                Log("Display settings or monitors changed. Forcing display state refresh.");
                 forceRefresh = true;
-            }
-        };
+            };
 
-        SystemEvents.SessionSwitch += (sender, e) => {
-            if (e.Reason == SessionSwitchReason.SessionUnlock || e.Reason == SessionSwitchReason.SessionLogon) {
-                Log("User session unlocked/logon detected. Forcing display state refresh.");
-                forceRefresh = true;
-            }
-        };
+            bool? isNightActive = null;
+            int tick = 0;
+            DateTime lastTickTime = DateTime.UtcNow;
 
-        bool? isNightActive = null; // null ensures immediate state evaluation and application on first tick
-        int tick = 0;
-
-        try {
             while (true) {
-                if (File.Exists(StopFile)) {
-                    try { File.Delete(StopFile); } catch {}
-                    Log("Stop signal received. Exiting service...");
-                    break;
-                }
+                try {
+                    if (File.Exists(StopFile)) {
+                        try { File.Delete(StopFile); } catch {}
+                        Log("Stop signal received. Exiting service...");
+                        break;
+                    }
 
-                if (forceRefresh) {
-                    forceRefresh = false;
-                    isNightActive = null;
-                    AttachToDefaultDesktop();
-                    MagInitialize();
-                }
+                    // Check for time jumps (e.g. sleep/hibernate wake-up without event)
+                    DateTime nowUtc = DateTime.UtcNow;
+                    double elapsedSec = (nowUtc - lastTickTime).TotalSeconds;
+                    if (elapsedSec > 5.0) {
+                        Log(string.Format("Time jump detected ({0:F1}s elapsed, possible sleep/wake). Refreshing display.", elapsedSec));
+                        forceRefresh = true;
+                    }
+                    lastTickTime = nowUtc;
 
-                if (tick % 10 == 0) {
-                    LoadConfig();
-                }
+                    if (forceRefresh) {
+                        forceRefresh = false;
+                        isNightActive = null; // Forces immediate re-application of target state
+                        AttachToDefaultDesktop();
+                        MagInitialize();
+                    }
 
-                string over = null;
-                if (File.Exists(OverrideFile)) {
-                    try { over = File.ReadAllText(OverrideFile).Trim().ToLower(); } catch {}
-                }
+                    // Reload config every 10 seconds
+                    if (tick % 10 == 0) {
+                        LoadConfig();
+                        EnsureWindowsColorFilterDisabled();
+                    }
 
-                bool night;
-                if (over == "on") night = true;
-                else if (over == "off") night = false;
-                else night = IsNightTime();
+                    string over = null;
+                    if (File.Exists(OverrideFile)) {
+                        try { over = File.ReadAllText(OverrideFile).Trim().ToLower(); } catch {}
+                    }
 
-                if (night) {
-                    if (isNightActive != true) {
-                        Log(string.Format("ACTIVATING NIGHT MODE: B&W + Dimmed White ({0}) + Brightness ({1}%)", WhiteDim, NightBrightness));
-                        SetBrightness(NightBrightness);
-                        bool res = ApplyNightEffect(WhiteDim);
-                        Log("ApplyNightEffect returned: " + res);
-                        isNightActive = true;
+                    bool shouldBeNight;
+                    if (over == "on") shouldBeNight = true;
+                    else if (over == "off") shouldBeNight = false;
+                    else shouldBeNight = IsNightTime();
+
+                    if (shouldBeNight) {
+                        if (isNightActive != true) {
+                            Log(string.Format("TRANSITION -> NIGHT MODE: Schedule ({0} - {1}). B&W + Dimmed White ({2}) + Brightness ({3}%)", 
+                                StartTime.ToString(@"hh\:mm"), EndTime.ToString(@"hh\:mm"), WhiteDim, NightBrightness));
+                            SetBrightness(NightBrightness);
+                            bool res = ApplyNightEffect(WhiteDim);
+                            Log("ApplyNightEffect returned: " + res);
+                            isNightActive = true;
+                        } else {
+                            // Periodic health check every 5 seconds: ensure night matrix is still active
+                            if (tick % 5 == 0) {
+                                VerifyAndEnforceDisplay(true);
+                            }
+                        }
                     } else {
-                        // Enforce periodically in case DWM reset
-                        if (tick % 2 == 0) {
-                            ApplyNightEffect(WhiteDim);
+                        if (isNightActive != false) {
+                            Log(string.Format("TRANSITION -> DAY MODE: Schedule ({0} - {1}). Restoring full color + Brightness ({2}%)", 
+                                StartTime.ToString(@"hh\:mm"), EndTime.ToString(@"hh\:mm"), DayBrightness));
+                            EnsureWindowsColorFilterDisabled();
+                            bool res = ApplyDayEffect();
+                            Log("ApplyDayEffect returned: " + res);
+                            SetBrightness(DayBrightness);
+                            isNightActive = false;
+                        } else {
+                            // Periodic health check every 5 seconds: ensure screen is truly in day mode
+                            if (tick % 5 == 0) {
+                                VerifyAndEnforceDisplay(false);
+                            }
                         }
                     }
-                } else {
-                    if (isNightActive != false) {
-                        Log("DEACTIVATING NIGHT MODE: Restoring color and brightness");
-                        DisableWindowsColorFilter();
-                        bool res = ApplyDayEffect();
-                        Log("ApplyDayEffect returned: " + res);
-                        SetBrightness(DayBrightness);
-                        isNightActive = false;
-                    } else {
-                        // On the first few ticks at startup, reinforce day effect in case DWM was still loading
-                        if (tick <= 2) {
-                            ApplyDayEffect();
-                        }
-                    }
+
+                    tick++;
+                } catch (Exception ex) {
+                    Log("Exception in main loop: " + ex.Message);
                 }
 
-                tick++;
                 Thread.Sleep(1000);
             }
-        } catch (Exception ex) {
-            Log("Exception in service loop: " + ex.Message);
-        } finally {
+
             Log("Service exiting. Restoring default display...");
             ApplyDayEffect();
             MagUninitialize();

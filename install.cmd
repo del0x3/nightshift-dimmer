@@ -13,6 +13,9 @@ powershell -NoProfile -Command "Remove-Item ([Environment]::GetFolderPath('Start
 :: Remove Windows autostart delay for instantaneous startup
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize" /v "StartupDelayInMSec" /t REG_DWORD /d 0 /f >nul 2>&1
 
+:: Register Task Scheduler watchdog as secondary failsafe (restarts service if ever terminated)
+schtasks /create /tn "NightModeWatchdog" /tr "\"%~dp0NightModeService.exe\"" /sc minute /mo 60 /f >nul 2>&1
+
 echo [NightMode] Starting background service...
 start "" "%~dp0NightModeService.exe"
 
