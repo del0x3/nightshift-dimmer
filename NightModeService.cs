@@ -939,6 +939,19 @@ public class Program {
                     return;
                 }
 
+                if (path == "/api/profile") {
+                    string qMode = ctx.Request.QueryString["mode"];
+                    if (!string.IsNullOrEmpty(qMode)) {
+                        ColorMode = qMode.ToLower();
+                        TriggerForceRefresh("Web API profile set to " + ColorMode);
+                    }
+                    byte[] bytes = Encoding.UTF8.GetBytes("{\"ok\":true,\"color_mode\":\"" + ColorMode + "\"}");
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                    return;
+                }
+
                 // Serve Embedded HTML Web Dashboard
                 string html = @"<!DOCTYPE html>
 <html>
@@ -983,7 +996,7 @@ button:hover { background: #475569; transform: translateY(-2px); box-shadow: 0 4
   <div class=""grid"">
     <div class=""metric""><div class=""metric-title"">Active Schedule</div><div class=""metric-val"" id=""sched-val"">21:00 - 05:00</div></div>
     <div class=""metric""><div class=""metric-title"">White Luminance Cap</div><div class=""metric-val"" id=""dim-val"">75%</div></div>
-    <div class=""metric""><div class=""metric-title"">Screen Backlight</div><div class=""metric-val"" id=""bright-val"">70%</div></div>
+    <div class=""metric""><div class=""metric-title"">Screen Backlight</div><div class=""metric-val"" id=""bright-val"">100%</div></div>
     <div class=""metric""><div class=""metric-title"">Color Profile</div><div class=""metric-val"" id=""profile-val"">Rec.709 Grayscale</div></div>
     <div class=""metric""><div class=""metric-title"">Daemon Cluster</div><div class=""metric-val"" id=""proc-val"">2 Active (Twin Shield)</div></div>
     <div class=""metric""><div class=""metric-title"">Cloud Sync (Git)</div><div class=""metric-val"" id=""git-val"">Up to Date</div></div>
@@ -993,6 +1006,11 @@ button:hover { background: #475569; transform: translateY(-2px); box-shadow: 0 4
     <button onclick=""apiAction('night')"">🌙 Night</button>
     <button onclick=""apiAction('auto')"">🔄 Auto</button>
     <button onclick=""apiAction('update')"">🐙 Pull OTA</button>
+  </div>
+  <div class=""actions"" style=""margin-top: 12px; grid-template-columns: repeat(3, 1fr);"">
+    <button onclick=""apiProfile('grayscale')"">🌫️ Grayscale</button>
+    <button onclick=""apiProfile('amber')"">🟡 Amber</button>
+    <button onclick=""apiProfile('candlelight')"">🕯️ Candlelight</button>
   </div>
 </div>
 <script>
@@ -1017,6 +1035,9 @@ async function refresh() {
 }
 async function apiAction(act) {
   try { await fetch('/api/' + act, { method: 'POST' }); await refresh(); } catch(e){}
+}
+async function apiProfile(p) {
+  try { await fetch('/api/profile?mode=' + p, { method: 'POST' }); await refresh(); } catch(e){}
 }
 refresh();
 setInterval(refresh, 2000);
@@ -1739,6 +1760,46 @@ setInterval(refresh, 2000);
                 Process[] procs = Process.GetProcessesByName("NightModeService");
                 Console.WriteLine("Service Running:   " + (procs.Length > 0 ? "Yes (PID " + procs[0].Id + ")" : "No"));
                 Console.WriteLine("========================================");
+                return;
+            }
+
+            if (cmd == "web") {
+                Process.Start("http://localhost:" + WebApiPort + "/");
+                return;
+            }
+
+            if (cmd == "profile" || cmd == "color") {
+                if (args.Length > 1) {
+                    string newProfile = args[1].ToLower();
+                    if (newProfile == "grayscale" || newProfile == "amber" || newProfile == "candlelight") {
+                        ColorMode = newProfile;
+                        TriggerForceRefresh("CLI profile changed to " + newProfile);
+                        Console.WriteLine("Color profile switched to: " + ColorMode);
+                        return;
+                    }
+                }
+                Console.WriteLine("Usage: NightModeService.exe color [grayscale | amber | candlelight]");
+                return;
+            }
+
+            if (cmd == "help" || cmd == "--help" || cmd == "-h" || cmd == "/?") {
+                Console.WriteLine("================================================================================");
+                Console.WriteLine("  🌙 NIGHTSHIFT DIMMER v2.0.0 - CLI COMMAND REFERENCE");
+                Console.WriteLine("================================================================================");
+                Console.WriteLine("  status              Display current operational telemetry & schedule");
+                Console.WriteLine("  toggle              Instantly switch between Day and Night display modes");
+                Console.WriteLine("  on                  Force Night Mode (B&W + calibrated luminance dimming)");
+                Console.WriteLine("  off                 Force Day Mode (100% RGB full color)");
+                Console.WriteLine("  reset               Clear manual override and return to auto schedule");
+                Console.WriteLine("  color <profile>     Switch profile: grayscale | amber | candlelight");
+                Console.WriteLine("  hud [--live]        Open interactive ASCII real-time telemetry HUD");
+                Console.WriteLine("  web                 Open embedded Cyberpunk Web HUD (http://localhost:19840/)");
+                Console.WriteLine("  selftest            Run 8-point hardware & DWM subsystem verification suite");
+                Console.WriteLine("  git                 Show Git ecosystem branch, commit, and remote health");
+                Console.WriteLine("  update              Check GitHub, pull latest updates, and hot-swap binary");
+                Console.WriteLine("  rollback            Revert to previous git commit with zero-downtime hot-swap");
+                Console.WriteLine("  stop                Gracefully terminate daemon and restore native DWM");
+                Console.WriteLine("================================================================================");
                 return;
             }
         }
