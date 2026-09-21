@@ -46,6 +46,7 @@ jobs:
           rollback.cmd
           start.cmd
           stop.cmd
+          snooze.cmd
           toggle.cmd
           status.cmd
           dashboard.cmd

@@ -46,6 +46,7 @@ Done! The daemon will now automatically manage your display according to your sc
 | [`uninstall.cmd`](uninstall.cmd) | Stops service, restores original display colors, and removes autostart. |
 | [`start.cmd`](start.cmd) | Starts the background daemon manually. |
 | [`stop.cmd`](stop.cmd) | Stops the daemon and instantly restores normal full-color display. |
+| [`snooze.cmd`](snooze.cmd) | Temporarily activates Day Mode (default: 30 min) before auto-restoring schedule. |
 | [`toggle.cmd`](toggle.cmd) | Instantly toggles between Day (color) and Night (grayscale + dimming) mode. |
 | [`status.cmd`](status.cmd) | Displays active configuration, current local time, and operational status. |
 | [`dashboard.cmd`](dashboard.cmd) | Opens live real-time ASCII telemetry dashboard with cycle progress bar. |
@@ -124,6 +125,9 @@ NightModeService.exe on
 
 # Force night mode OFF (manual override)
 NightModeService.exe off
+
+# Temporarily enable Day Mode for N minutes (default: 30) before auto-resuming schedule
+NightModeService.exe snooze 30
 
 # Stop service and reset display to factory defaults
 NightModeService.exe stop

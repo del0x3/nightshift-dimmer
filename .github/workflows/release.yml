@@ -33,6 +33,7 @@ jobs:
           "uninstall.cmd",
           "start.cmd",
           "stop.cmd",
+          "snooze.cmd",
           "toggle.cmd",
           "status.cmd",
           "update.cmd",

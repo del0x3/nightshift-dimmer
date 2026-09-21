@@ -729,10 +729,40 @@ public class Program {
         }
     }
 
+    public static void SetSnooze(int minutes) {
+        if (minutes <= 0) minutes = 30;
+        DateTime untilUtc = DateTime.UtcNow.AddMinutes(minutes);
+        File.WriteAllText(OverrideFile, "snooze:" + untilUtc.ToString("o"));
+        AttachToDefaultDesktop();
+        MagInitialize();
+        ApplyDayEffect(true);
+        SetBrightness(DayBrightness);
+        EnsureWindowsColorFilterDisabled();
+        UpdateTrayIcon(false);
+        Log(string.Format("[Snooze] Day mode snoozed for {0} minutes (until {1:HH:mm:ss} local)", minutes, untilUtc.ToLocalTime()));
+    }
+
     public static void UpdateTrayIcon(bool isNight) {
         try {
             if (!TrayIconEnabled || trayIcon == null) return;
             trayIcon.Icon = CreateDynamicIcon(isNight);
+
+            if (File.Exists(OverrideFile)) {
+                try {
+                    string over = File.ReadAllText(OverrideFile).Trim();
+                    if (over.ToLower().StartsWith("snooze:")) {
+                        DateTime snoozeUntil;
+                        if (DateTime.TryParse(over.Substring(7), null, System.Globalization.DateTimeStyles.RoundtripKind, out snoozeUntil)) {
+                            TimeSpan rem = snoozeUntil.ToUniversalTime() - DateTime.UtcNow;
+                            if (rem.TotalSeconds > 0) {
+                                trayIcon.Text = string.Format("NightShift: Snoozed ({0}m left)", (int)Math.Ceiling(rem.TotalMinutes));
+                                return;
+                            }
+                        }
+                    }
+                } catch {}
+            }
+
             TimeSpan now = DateTime.Now.TimeOfDay;
             TimeSpan remaining = isNight ? 
                 ((now < EndTime) ? (EndTime - now) : ((new TimeSpan(24, 0, 0) - now) + EndTime)) :
@@ -764,6 +794,14 @@ public class Program {
                 SetBrightness(NightBrightness);
                 UpdateTrayIcon(true);
             });
+
+            ToolStripMenuItem snoozeMenu = new ToolStripMenuItem("⏳ Snooze (Day Mode)");
+            snoozeMenu.DropDownItems.Add("15 Minutes", null, (s, e) => SetSnooze(15));
+            snoozeMenu.DropDownItems.Add("30 Minutes", null, (s, e) => SetSnooze(30));
+            snoozeMenu.DropDownItems.Add("1 Hour", null, (s, e) => SetSnooze(60));
+            snoozeMenu.DropDownItems.Add("2 Hours", null, (s, e) => SetSnooze(120));
+            menu.Items.Add(snoozeMenu);
+
             menu.Items.Add("🔄 Auto Schedule", null, (s, e) => {
                 if (File.Exists(OverrideFile)) File.Delete(OverrideFile);
                 TriggerForceRefresh("Tray auto schedule selected");
@@ -859,6 +897,24 @@ public class Program {
                         try { totalMem += p.WorkingSet64 / (1024 * 1024); } catch {}
                     }
 
+                    int snoozeSec = 0;
+                    bool isSnoozed = false;
+                    if (File.Exists(OverrideFile)) {
+                        try {
+                            string ov = File.ReadAllText(OverrideFile).Trim();
+                            if (ov.ToLower().StartsWith("snooze:")) {
+                                DateTime snoozeUntil;
+                                if (DateTime.TryParse(ov.Substring(7), null, System.Globalization.DateTimeStyles.RoundtripKind, out snoozeUntil)) {
+                                    TimeSpan rem = snoozeUntil.ToUniversalTime() - DateTime.UtcNow;
+                                    if (rem.TotalSeconds > 0) {
+                                        snoozeSec = (int)rem.TotalSeconds;
+                                        isSnoozed = true;
+                                    }
+                                }
+                            }
+                        } catch {}
+                    }
+
                     double progressPct = 0.0;
                     if (isNight) {
                         TimeSpan totalNight = (EndTime >= StartTime) ? (EndTime - StartTime) : ((new TimeSpan(24, 0, 0) - StartTime) + EndTime);
@@ -871,7 +927,7 @@ public class Program {
                     }
 
                     string json = string.Format(
-                        "{{\"status\":\"running\",\"is_night\":{0},\"schedule\":\"{1} - {2}\",\"schedule_mode\":\"{3}\",\"white_dim\":{4:F2},\"current_brightness\":{5},\"color_mode\":\"{6}\",\"process_count\":{7},\"memory_mb\":{8},\"next_switch\":\"{9:D2}h {10:D2}m {11:D2}s\",\"cycle_percent\":{12},\"git_commit\":\"{13}\",\"git_sync\":\"{14}\"}}",
+                        "{{\"status\":\"running\",\"is_night\":{0},\"schedule\":\"{1} - {2}\",\"schedule_mode\":\"{3}\",\"white_dim\":{4:F2},\"current_brightness\":{5},\"color_mode\":\"{6}\",\"process_count\":{7},\"memory_mb\":{8},\"next_switch\":\"{9:D2}h {10:D2}m {11:D2}s\",\"cycle_percent\":{12},\"git_commit\":\"{13}\",\"git_sync\":\"{14}\",\"is_snoozed\":{15},\"snooze_seconds\":{16}}}",
                         isNight.ToString().ToLower(),
                         StartTime.ToString(@"hh\:mm"),
                         EndTime.ToString(@"hh\:mm"),
@@ -886,8 +942,28 @@ public class Program {
                         nextSwitch.Seconds,
                         (int)(progressPct * 100),
                         GitManager.GetCurrentCommit(),
-                        GitManager.GetSyncStatus()
+                        GitManager.GetSyncStatus(),
+                        isSnoozed.ToString().ToLower(),
+                        snoozeSec
                     );
+                    byte[] bytes = Encoding.UTF8.GetBytes(json);
+                    ctx.Response.ContentType = "application/json";
+                    ctx.Response.ContentLength64 = bytes.Length;
+                    ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                    ctx.Response.Close();
+                    return;
+                }
+
+                if (path == "/api/snooze") {
+                    int minutes = 30;
+                    string qMin = ctx.Request.QueryString["minutes"];
+                    if (!string.IsNullOrEmpty(qMin)) {
+                        int.TryParse(qMin, out minutes);
+                    }
+                    if (minutes <= 0) minutes = 30;
+                    SetSnooze(minutes);
+                    DateTime untilUtc = DateTime.UtcNow.AddMinutes(minutes);
+                    string json = string.Format("{{\"ok\":true,\"mode\":\"snooze\",\"minutes\":{0},\"until\":\"{1:yyyy-MM-dd HH:mm:ss}\"}}", minutes, untilUtc.ToLocalTime());
                     byte[] bytes = Encoding.UTF8.GetBytes(json);
                     ctx.Response.ContentType = "application/json";
                     ctx.Response.ContentLength64 = bytes.Length;
@@ -903,6 +979,7 @@ public class Program {
                     UpdateTrayIcon(false);
                     byte[] bytes = Encoding.UTF8.GetBytes("{\"ok\":true,\"mode\":\"day\"}");
                     ctx.Response.ContentType = "application/json";
+                    ctx.Response.ContentLength64 = bytes.Length;
                     ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
                     ctx.Response.Close();
                     return;
@@ -971,7 +1048,7 @@ body { background: #0b0f19; color: #e2e8f0; font-family: 'Segoe UI', system-ui, 
 .metric { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 14px; padding: 16px; }
 .metric-title { font-size: 11px; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 .metric-val { font-size: 18px; font-weight: 700; color: #f1f5f9; }
-.actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 24px; }
+.actions { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 24px; }
 button { background: #334155; border: 1px solid rgba(255, 255, 255, 0.12); color: #f8fafc; padding: 12px 8px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
 button:hover { background: #475569; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 .progress-container { margin: 20px 0; }
@@ -1004,6 +1081,7 @@ button:hover { background: #475569; transform: translateY(-2px); box-shadow: 0 4
   <div class=""actions"">
     <button onclick=""apiAction('day')"">☀️ Day</button>
     <button onclick=""apiAction('night')"">🌙 Night</button>
+    <button onclick=""apiSnooze(30)"">⏳ Snooze 30m</button>
     <button onclick=""apiAction('auto')"">🔄 Auto</button>
     <button onclick=""apiAction('update')"">🐙 Pull OTA</button>
   </div>
@@ -1020,8 +1098,13 @@ async function refresh() {
     const data = await res.json();
     const isNight = data.is_night;
     const badge = document.getElementById('mode-badge');
-    badge.textContent = isNight ? '🌙 NIGHT MODE' : '☀️ DAY MODE';
-    badge.className = 'badge ' + (isNight ? 'badge-night' : 'badge-day');
+    if (data.is_snoozed && data.snooze_seconds > 0) {
+      badge.textContent = '⏳ SNOOZED (' + Math.ceil(data.snooze_seconds / 60) + 'M LEFT)';
+      badge.className = 'badge badge-day';
+    } else {
+      badge.textContent = isNight ? '🌙 NIGHT MODE' : '☀️ DAY MODE';
+      badge.className = 'badge ' + (isNight ? 'badge-night' : 'badge-day');
+    }
     document.getElementById('sched-val').textContent = data.schedule + ' (' + data.schedule_mode + ')';
     document.getElementById('dim-val').textContent = (data.white_dim * 100).toFixed(0) + '%';
     document.getElementById('bright-val').textContent = data.current_brightness + '%';
@@ -1035,6 +1118,9 @@ async function refresh() {
 }
 async function apiAction(act) {
   try { await fetch('/api/' + act, { method: 'POST' }); await refresh(); } catch(e){}
+}
+async function apiSnooze(m) {
+  try { await fetch('/api/snooze?minutes=' + m, { method: 'POST' }); await refresh(); } catch(e){}
 }
 async function apiProfile(p) {
   try { await fetch('/api/profile?mode=' + p, { method: 'POST' }); await refresh(); } catch(e){}
@@ -1539,8 +1625,30 @@ setInterval(refresh, 2000);
             Console.WriteLine("  ● WTS Session Hook:  ACTIVE (Lock/Unlock/Logon fast switching interceptor)");
             Console.WriteLine();
 
+            string overrideStatus = "None (Auto Schedule)";
+            if (File.Exists(OverrideFile)) {
+                try {
+                    string ov = File.ReadAllText(OverrideFile).Trim();
+                    string lov = ov.ToLower();
+                    if (lov == "on") overrideStatus = "FORCED NIGHT";
+                    else if (lov == "off") overrideStatus = "FORCED DAY";
+                    else if (lov.StartsWith("snooze:")) {
+                        DateTime su;
+                        if (DateTime.TryParse(ov.Substring(7), null, System.Globalization.DateTimeStyles.RoundtripKind, out su)) {
+                            TimeSpan rem = su.ToUniversalTime() - DateTime.UtcNow;
+                            if (rem.TotalSeconds > 0) {
+                                overrideStatus = string.Format("SNOOZED ({0}m {1:D2}s left, until {2:HH:mm:ss})", (int)rem.TotalMinutes, rem.Seconds, su.ToLocalTime());
+                            } else {
+                                overrideStatus = "SNOOZE (Expired)";
+                            }
+                        }
+                    }
+                } catch {}
+            }
+
             Console.WriteLine(" [DISPLAY & DWM HARDWARE ENGINE]");
             Console.WriteLine("  ● Active Mode:       " + (isNight ? "🌙 NIGHT MODE (B&W + Dimmed White)" : "☀️ DAY MODE (TrueColor RGB)"));
+            Console.WriteLine("  ● Active Override:   " + overrideStatus);
             Console.WriteLine(string.Format("  ● Cycle Progress:    [{0}] {1,3:F0}% (Next: {2} in {3:D2}h {4:D2}m {5:D2}s)", 
                 progressBar, progressPct * 100, nextModeName, nextSwitch.Hours, nextSwitch.Minutes, nextSwitch.Seconds));
             Console.WriteLine(string.Format("  ● Schedule:          {0} -> {1} (Kyiv Time)", StartTime.ToString(@"hh\:mm"), EndTime.ToString(@"hh\:mm")));
@@ -1729,6 +1837,19 @@ setInterval(refresh, 2000);
                 return;
             }
 
+            if (cmd == "snooze") {
+                LoadConfig();
+                int minutes = 30;
+                if (args.Length >= 2) {
+                    int.TryParse(args[1], out minutes);
+                }
+                if (minutes <= 0) minutes = 30;
+                SetSnooze(minutes);
+                DateTime untilUtc = DateTime.UtcNow.AddMinutes(minutes);
+                Console.WriteLine(string.Format("[NightMode] Snooze activated for {0} minutes (until {1:HH:mm:ss}). Day mode active.", minutes, untilUtc.ToLocalTime()));
+                return;
+            }
+
             if (cmd == "reset") {
                 if (File.Exists(OverrideFile)) {
                     try { File.Delete(OverrideFile); } catch {}
@@ -1740,8 +1861,25 @@ setInterval(refresh, 2000);
             if (cmd == "status") {
                 LoadConfig();
                 string over = null;
+                string overDisplay = "None (Auto)";
                 if (File.Exists(OverrideFile)) {
-                    try { over = File.ReadAllText(OverrideFile).Trim().ToLower(); } catch {}
+                    try { 
+                        over = File.ReadAllText(OverrideFile).Trim();
+                        string lo = over.ToLower();
+                        if (lo == "on") overDisplay = "ON (Night Mode)";
+                        else if (lo == "off") overDisplay = "OFF (Day Mode)";
+                        else if (lo.StartsWith("snooze:")) {
+                            DateTime snoozeUntil;
+                            if (DateTime.TryParse(over.Substring(7), null, System.Globalization.DateTimeStyles.RoundtripKind, out snoozeUntil)) {
+                                TimeSpan rem = snoozeUntil.ToUniversalTime() - DateTime.UtcNow;
+                                if (rem.TotalSeconds > 0) {
+                                    overDisplay = string.Format("SNOOZE ({0}m {1:D2}s remaining, until {2:HH:mm:ss})", (int)rem.TotalMinutes, rem.Seconds, snoozeUntil.ToLocalTime());
+                                } else {
+                                    overDisplay = "SNOOZE (Expired)";
+                                }
+                            }
+                        }
+                    } catch {}
                 }
                 Console.WriteLine("========================================");
                 Console.WriteLine("NightShift Dimmer Status");
@@ -1749,7 +1887,7 @@ setInterval(refresh, 2000);
                 Console.WriteLine("Schedule:          " + StartTime.ToString(@"hh\:mm") + " - " + EndTime.ToString(@"hh\:mm"));
                 Console.WriteLine("Current Time:      " + DateTime.Now.ToString("HH:mm:ss"));
                 Console.WriteLine("Is Night Window:   " + IsNightTime());
-                Console.WriteLine("Manual Override:   " + (over != null ? over.ToUpper() : "None (Auto)"));
+                Console.WriteLine("Manual Override:   " + overDisplay);
                 Console.WriteLine("White Dim Factor:  " + WhiteDim);
                 Console.WriteLine("Night Brightness:  " + NightBrightness + "%");
                 Console.WriteLine("Day Brightness:    " + DayBrightness + "%");
@@ -1941,13 +2079,31 @@ setInterval(refresh, 2000);
 
                     string over = null;
                     if (File.Exists(OverrideFile)) {
-                        try { over = File.ReadAllText(OverrideFile).Trim().ToLower(); } catch {}
+                        try { over = File.ReadAllText(OverrideFile).Trim(); } catch {}
                     }
 
                     bool shouldBeNight;
-                    if (over == "on") shouldBeNight = true;
-                    else if (over == "off") shouldBeNight = false;
-                    else shouldBeNight = IsNightTime();
+                    string lowerOver = over != null ? over.ToLower() : null;
+                    if (lowerOver == "on") {
+                        shouldBeNight = true;
+                    } else if (lowerOver == "off") {
+                        shouldBeNight = false;
+                    } else if (lowerOver != null && lowerOver.StartsWith("snooze:")) {
+                        DateTime snoozeUntil;
+                        if (DateTime.TryParse(over.Substring(7), null, System.Globalization.DateTimeStyles.RoundtripKind, out snoozeUntil)) {
+                            if (DateTime.UtcNow < snoozeUntil.ToUniversalTime()) {
+                                shouldBeNight = false;
+                            } else {
+                                Log(string.Format("[Snooze] Snooze period expired (was until {0:HH:mm:ss} local). Resuming schedule.", snoozeUntil.ToLocalTime()));
+                                try { File.Delete(OverrideFile); } catch {}
+                                shouldBeNight = IsNightTime();
+                            }
+                        } else {
+                            shouldBeNight = false;
+                        }
+                    } else {
+                        shouldBeNight = IsNightTime();
+                    }
 
                     if (shouldBeNight) {
                         if (isNightActive != true) {

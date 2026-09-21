@@ -65,7 +65,7 @@ if not exist "%CSC%" (
     exit /b 1
 )
 
-"%CSC%" /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /out:"%~dp0NightModeService.exe" "%~dp0NightModeService.cs"
+"%CSC%" /target:winexe /optimize+ /platform:anycpu /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /out:"%~dp0NightModeService.exe" "%~dp0NightModeService.cs"
 
 if %errorlevel% neq 0 (
     echo [Error] Compilation failed!
